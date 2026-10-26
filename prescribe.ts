@@ -371,7 +371,10 @@ export function runPrescribe(argv: string[]): void {
   }
 
   const limit = limitArg ? Number(limitArg.split('=')[1]) : 1;
-  const files = discoverSessions(path.join(dshHome(), 'sessions')).slice(0, limit);
+  const files = discoverSessions(
+    path.join(dshHome(), 'sessions'),
+    argv.includes('--newest') ? 'mtime' : 'bytes',
+  ).slice(0, limit);
   if (files.length === 0) {
     console.error(`没有找到会话日志。用法：node prescribe.ts <日志文件>`);
     process.exit(2);

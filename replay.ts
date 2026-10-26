@@ -30,7 +30,12 @@ export interface SessionFile {
   readonly path: string;
   readonly id: string;
   readonly bytes: number;
+  /** 文件 mtime（毫秒）。apply 之后按它切 before / after。 */
+  readonly mtimeMs: number;
 }
+
+/** discoverSessions 的排序口径：bytes = 最大的会话；mtime = 最新的会话。 */
+export type SessionSort = 'bytes' | 'mtime';
 
 export interface CompactionObservation {
   readonly surfaceTokens: number;
@@ -372,8 +377,13 @@ export function foldLog(frames: Iterable<string>): FoldedLog {
 
 // ── 文件级 API ────────────────────────────────────────────────────────────
 
-/** 递归发现 `session.v3.jsonl.zstd`，按体积降序。 */
-export function discoverSessions(root: string): SessionFile[] {
+/**
+ * 递归发现 `session.v3.jsonl.zstd`。
+ *
+ *   sortBy = 'bytes'（默认）：体积降序 —— "最大的 N 个会话"，代表稳态负载；
+ *   sortBy = 'mtime'        ：修改时间降序 —— "最新的 N 个会话"，用于 `--newest`。
+ */
+export function discoverSessions(root: string, sortBy: SessionSort = 'bytes'): SessionFile[] {
   const found: SessionFile[] = [];
   const walk = (dir: string): void => {
     let entries: fs.Dirent[];
@@ -386,12 +396,18 @@ export function discoverSessions(root: string): SessionFile[] {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
       else if (e.name === 'session.v3.jsonl.zstd') {
-        found.push({ path: p, id: path.basename(path.dirname(p)), bytes: fs.statSync(p).size });
+        const stat = fs.statSync(p);
+        found.push({
+          path: p,
+          id: path.basename(path.dirname(p)),
+          bytes: stat.size,
+          mtimeMs: stat.mtimeMs,
+        });
       }
     }
   };
   walk(root);
-  found.sort((a, b) => b.bytes - a.bytes);
+  found.sort(sortBy === 'mtime' ? (a, b) => b.mtimeMs - a.mtimeMs : (a, b) => b.bytes - a.bytes);
   return found;
 }
 
@@ -727,7 +743,7 @@ export function runAudit(argv: string[]): void {
 
   const limit = limitArg ? Number(limitArg.split('=')[1]) : 3;
   const root = path.join(dshHome(), 'sessions');
-  const files = discoverSessions(root).slice(0, limit);
+  const files = discoverSessions(root, argv.includes('--newest') ? 'mtime' : 'bytes').slice(0, limit);
   if (files.length === 0) {
     console.error(`没有找到会话日志：${root}\n用法：node replay.ts <日志文件>`);
     process.exit(2);

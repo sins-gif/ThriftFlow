@@ -25,7 +25,17 @@ node prescribe.ts --limit=1      # 对最大的真实会话开处方
 node selftest.ts          # 回放 25 个最大会话：拟合 + 样本内/外残差
 node selftest.ts --tables # 策略表：γ、s、ρ 三条曲线的数值
 node selftest.ts --policy # 政策级预测（不读逐步 token）
+
+# 改配置 → 事后验证
+node thriftflow.ts apply --dry-run          # 先看要改哪三处
+node thriftflow.ts apply --from=mock_log.jsonl
+node thriftflow.ts compare --after-apply    # 按生效时间切实测 before/after
 ```
+
+审计与处方默认按**体积**取最大的会话（代表稳态负载）；加 `--newest` 改成按
+mtime 取最新的。`apply` 成功后会在 `$DSH_HOME/.thriftflow/applied.json` 留下一条
+生效记录（时间、取值、备份号、preset），`compare --after-apply` 就靠它把会话
+日志切成两组。after 组不足 50 步时它只报"样本不足"，不编数。
 
 读的是 `$DSH_HOME/sessions/**/session.v3.jsonl.zstd`（默认 `~/.dsh/sessions`）。
 
@@ -51,6 +61,10 @@ node selftest.ts --policy # 政策级预测（不读逐步 token）
 | `model.ts` | 求解器：常数、band\*/θ\*、成本泛函、三条判据、OLS 标定。纯函数，无 I/O |
 | `replay.ts` | 会话日志回放 + **成本审计 CLI**：zstd 多帧/明文 jsonl 解压、折叠成轮次记录、打印报告 |
 | `prescribe.ts` | **处方 CLI**：调用 `recommend()`，把推荐值摆成 Diff 表，折算成"分钟 / 万 token"，并输出可粘贴的 patch |
+| `compare.ts` | **对照 CLI**：策略投影 before/after；`--after-apply` 则按生效时间切实测 |
+| `apply.ts` | **落地 CLI**：改写 `profiles/<p>/cordis.patch.yml` 与新建 agent preset，带备份/校验/回滚，成功后写 `applied.json` |
+| `proxy.ts` | 本地请求代理：在请求出本机前压阈值（试跑用，不改配置） |
+| `thriftflow.ts` | 统一入口：`audit` / `prescribe` / `compare` / `apply` / `proxy` |
 | `selftest.ts` | 回归自测：回放、拟合、残差、策略表 |
 | `mock_log.jsonl` | 合成日志（400 步，已知真值），用于验证 CLI 全链路 |
 | `docs/model.zh.md` | 推导、判据、常数证据等级、已知局限 |

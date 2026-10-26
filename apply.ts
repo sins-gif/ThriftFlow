@@ -380,6 +380,78 @@ function verify(plan: Plan): string[] {
   return problems;
 }
 
+// ── 生效记录（compare --after-apply 的锚点）───────────────────────────────
+
+/**
+ * `apply` 成功后写一份"什么时候、用什么值、覆盖了哪份备份"的记录。
+ *
+ * 为什么需要它：备份目录名只含时间戳，取值和 preset 得靠人肉回忆；
+ * 而 `compare --after-apply` 需要一条**可信的时间分界**才能把会话日志切成
+ * before / after 两组。没有这把尺子，就只能按体积猜，那是编数。
+ */
+export interface AppliedRecord {
+  readonly appliedAt: string;
+  /** 与 mtime 同单位（毫秒），用于和会话文件比较 */
+  readonly appliedAtMs: number;
+  readonly values: {
+    readonly theta: number;
+    readonly rho: number;
+    readonly maxInlineBytes: number;
+    readonly windowTokens: number;
+  };
+  readonly backupId: string;
+  readonly presetId: string;
+  readonly profile: string;
+  readonly source: string;
+}
+
+export function appliedRecordPath(home: string): string {
+  return path.join(home, '.thriftflow', 'applied.json');
+}
+
+function writeAppliedRecord(
+  home: string,
+  plan: Plan,
+  backupId: string,
+  profile: string,
+): string {
+  const now = new Date();
+  const file = appliedRecordPath(home);
+  const record: AppliedRecord = {
+    appliedAt: now.toISOString(),
+    appliedAtMs: now.getTime(),
+    values: {
+      theta: plan.values.theta,
+      rho: plan.values.rho,
+      maxInlineBytes: plan.values.maxInlineBytes,
+      windowTokens: plan.values.windowTokens,
+    },
+    backupId,
+    presetId: plan.presetId,
+    profile,
+    source: plan.values.source,
+  };
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, JSON.stringify(record, null, 2) + '\n', 'utf8');
+  return file;
+}
+
+/** 读生效记录；没跑过 apply（或文件损坏）时返回 null，调用方负责报"样本不足"。 */
+export function readAppliedRecord(home: string): AppliedRecord | null {
+  const text = readText(appliedRecordPath(home));
+  if (text === null) return null;
+  try {
+    // 手改过的文件在 Windows 上常带 BOM，JSON.parse 不认
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, '').trim()) as Partial<AppliedRecord>;
+    if (typeof parsed.appliedAtMs !== 'number' || !Number.isFinite(parsed.appliedAtMs)) return null;
+    const values = parsed.values;
+    if (!values || typeof values.theta !== 'number' || typeof values.rho !== 'number') return null;
+    return parsed as AppliedRecord;
+  } catch {
+    return null;
+  }
+}
+
 export function runApply(argv: string[]): void {
   const home = flagValue(argv, 'dsh-home') ?? dshHomeDefault();
   const restoreStamp = flagValue(argv, 'restore');
@@ -452,11 +524,15 @@ export function runApply(argv: string[]): void {
     return;
   }
 
+  const recordFile = writeAppliedRecord(home, plan, path.basename(backupRoot), profile);
+
   console.log('\n校验通过：标记块、maxInlineBytes、retainTokens、thresholdChars 均已在位。');
+  console.log(`生效记录  ${recordFile}`);
   console.log('\n生效方式：');
   console.log('  · 宿主层（spill-policy）与默认 preset 指向：web profile 的 patchReload=live，热重载，无需重启；');
   console.log(`  · 新 preset（${plan.presetId}）只对**新建会话**生效；已存在的会话仍用旧 preset。`);
-  console.log('  · 新开一个会话后跑 `node thriftflow.ts audit --limit=1` 验证实测。');
+  console.log('  · 新开一个会话后跑 `node thriftflow.ts audit --limit=1` 验证实测；');
+  console.log('  · 攒够几个新会话后跑 `node thriftflow.ts compare --after-apply` 看实测趋势。');
   console.log(`\n回滚：node thriftflow.ts apply --restore ${path.basename(backupRoot)}\n`);
 }
 

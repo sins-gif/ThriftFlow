@@ -1,21 +1,28 @@
 /**
  * compare.ts —— before / after 对照
  *
- *   node thriftflow.ts compare                 # 最大的 25 个会话
+ *   node thriftflow.ts compare                      # 最大的 25 个会话（策略投影对照）
  *   node thriftflow.ts compare --limit=50
  *   node thriftflow.ts compare mock_log.jsonl
+ *   node thriftflow.ts compare --newest --limit=5   # 最新的 5 个会话
+ *   node thriftflow.ts compare --after-apply        # 按 apply 生效时间切分，只比实测
  *
- * 两侧都用 model.ts 的同一套投影：A = 当前 dsh 默认（0.8W / 0.16W），
- * B = 处方（θ* / W、ρ=30k、截断后的 g'）。这样比较的是**策略差**，
- * 不是"投影 vs 实测"（后者含模型误差，见 selftest：样本外 7.6%）。
+ * 两种模式的区别很重要：
+ *
+ *   · 默认（策略投影）：两侧都用 model.ts 的同一套投影：A = 当前 dsh 默认（0.8W / 0.16W），
+ *     B = 处方（θ* / W、ρ=30k、截断后的 g'）。比的是**策略差**，不是"投影 vs 实测"。
+ *   · `--after-apply`：读 apply 写下的 `~/.dsh/.thriftflow/applied.json`，用其中的时间戳
+ *     把会话日志切成 before / after 两组，两边都取实测中位数。它回答的是"改了之后，
+ *     真实跑出来的形状变了没有"。两组任务构成不同，所以只能当趋势证据。
  *
  * 同时报 A 投影与实测的偏差，好让读者知道这张表的可信区间。
  */
 
 import path from 'node:path';
 import { sessionCost, type Policy } from './model.ts';
-import { discoverSessions, readLogFile } from './replay.ts';
+import { discoverSessions, readLogFile, type SessionFile } from './replay.ts';
 import { deriveStats, prescribe, type Stats } from './prescribe.ts';
+import { appliedRecordPath, readAppliedRecord } from './apply.ts';
 
 const DEFAULT_LIMIT = 25;
 
@@ -89,7 +96,242 @@ function analyse(log: ReturnType<typeof readLogFile>, name: string): Row | null 
   };
 }
 
+// ── --after-apply：按生效时间切分实测 ─────────────────────────────────────
+
+/** after 组样本门槛：最大的一份会话至少这么多步才肯下结论。 */
+const MIN_AFTER_STEPS = 50;
+/** before 组默认取体积最大的几个会话（稳态负载代表）。 */
+const DEFAULT_BEFORE_LIMIT = 10;
+
+interface Measured {
+  readonly name: string;
+  readonly steps: number;
+  readonly mtimeMs: number;
+  readonly compactionsPer1000: number;
+  readonly meanPrompt: number;
+  readonly peakPrompt: number;
+  readonly secondsPerStep: number;
+  readonly reasoningRatio: number;
+  readonly cacheHit: number;
+  /** 模型在"处方策略"下对同一份日志的预测（用于量化预测误差） */
+  readonly predictedSecondsPerStep: number;
+  readonly predictedMeanPrompt: number;
+}
+
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+
+/** 只看实测：把一份会话日志折成可比较的几个数，不做任何投影。 */
+function measure(file: SessionFile): Measured | null {
+  const log = readLogFile(file.path);
+  const calls = log.calls;
+  if (calls.length === 0) return null;
+  const stats = deriveStats(log);
+  const p = prescribe(stats);
+  const prompt = calls.reduce((s, c) => s + c.promptTokens, 0);
+  const reasoning = calls.reduce((s, c) => s + c.reasoningTokens, 0);
+  const cached = calls.reduce((s, c) => s + c.cacheReadTokens, 0);
+  return {
+    name: file.id.slice(0, 22),
+    steps: calls.length,
+    mtimeMs: file.mtimeMs,
+    compactionsPer1000: (log.compactions.length / calls.length) * 1000,
+    meanPrompt: stats.meanPrompt,
+    peakPrompt: stats.peakPrompt,
+    secondsPerStep: stats.observedPerStep,
+    reasoningRatio: prompt > 0 ? reasoning / prompt : 0,
+    cacheHit: prompt > 0 ? cached / prompt : 0,
+    predictedSecondsPerStep: p.proposed.totalSeconds / Math.max(1, calls.length),
+    // 与实测同口径：整个会话的 prompt 总量 / 步数（含爬升段），
+    // 不是稳态 meanContext —— 后者会把爬升算成"预测误差"。
+    predictedMeanPrompt: p.proposed.promptTokens / Math.max(1, calls.length),
+  };
+}
+
+interface GroupSummary {
+  readonly list: readonly Measured[];
+  readonly sessions: number;
+  readonly steps: number;
+  readonly maxSteps: number;
+  readonly compactionsPer1000: number;
+  readonly meanPrompt: number;
+  readonly peakPrompt: number;
+  readonly secondsPerStep: number;
+  readonly reasoningRatio: number;
+  readonly cacheHit: number;
+  readonly predictedSecondsPerStep: number;
+  readonly predictedMeanPrompt: number;
+}
+
+function summarize(list: readonly Measured[]): GroupSummary {
+  return {
+    list,
+    sessions: list.length,
+    steps: list.reduce((s, m) => s + m.steps, 0),
+    maxSteps: list.reduce((s, m) => Math.max(s, m.steps), 0),
+    compactionsPer1000: median(list.map((m) => m.compactionsPer1000)),
+    meanPrompt: median(list.map((m) => m.meanPrompt)),
+    peakPrompt: median(list.map((m) => m.peakPrompt)),
+    secondsPerStep: median(list.map((m) => m.secondsPerStep)),
+    reasoningRatio: median(list.map((m) => m.reasoningRatio)),
+    cacheHit: median(list.map((m) => m.cacheHit)),
+    predictedSecondsPerStep: median(list.map((m) => m.predictedSecondsPerStep)),
+    predictedMeanPrompt: median(list.map((m) => m.predictedMeanPrompt)),
+  };
+}
+
+function pctChange(before: number, after: number): string {
+  if (before === 0) return after === 0 ? '—' : '新增';
+  const d = (after - before) / before;
+  return `${d < 0 ? '−' : '+'}${(Math.abs(d) * 100).toFixed(1)}%`;
+}
+
+function ppChange(before: number, after: number): string {
+  const d = (after - before) * 100;
+  return `${d < 0 ? '−' : '+'}${Math.abs(d).toFixed(1)}pp`;
+}
+
+function dshHome(): string {
+  return process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh');
+}
+
+/**
+ * `compare --after-apply`：用 apply 留下的时间锚点，把会话日志切成 before / after，
+ * 只比**实测**。分组依据是文件 mtime，不是任务内容 —— 所以这是趋势证据。
+ */
+function runAfterApply(argv: string[]): void {
+  const home = dshHome();
+  const limitArg = argv.find((a) => a.startsWith('--limit='));
+  const beforeLimit = limitArg ? Number(limitArg.split('=')[1]) : DEFAULT_BEFORE_LIMIT;
+
+  const record = readAppliedRecord(home);
+  if (!record) {
+    console.error(
+      `\n没有生效记录：${appliedRecordPath(home)}\n` +
+        '  这条记录由 apply 成功后写入（--dry-run 不写）。\n' +
+        '  先跑一次真的 apply，之后再用 compare --after-apply。\n',
+    );
+    process.exit(2);
+    return;
+  }
+
+  const root = path.join(home, 'sessions');
+  const all = discoverSessions(root, 'mtime');
+  const beforePicked = all
+    .filter((f) => f.mtimeMs < record.appliedAtMs)
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, beforeLimit);
+  const afterFiles = all.filter((f) => f.mtimeMs >= record.appliedAtMs);
+
+  const before = beforePicked.map(measure).filter((m): m is Measured => m !== null);
+  const after = afterFiles.map(measure).filter((m): m is Measured => m !== null);
+  const beforeSum = summarize(before);
+  const afterSum = summarize(after);
+
+  const bar = '─'.repeat(78);
+  console.log('\n═══ after-apply 实测对照（趋势证据，不是同任务 A/B）═══');
+  console.log(`生效时间  ${record.appliedAt}`);
+  const windowTokens = record.values.windowTokens > 0 ? record.values.windowTokens : 1_000_000;
+  console.log(
+    `处方      θ=${num(record.values.theta)}（=${(record.values.theta / windowTokens).toFixed(3)}W）  ` +
+      `ρ=${num(record.values.rho)}  maxInlineBytes=${num(record.values.maxInlineBytes)}`,
+  );
+  console.log(`preset    ${record.presetId}（profile ${record.profile}）   备份 ${record.backupId}`);
+  console.log(`会话目录  ${root}`);
+  console.log(
+    `before    ${beforeSum.sessions} 个会话 / ${num(beforeSum.steps)} 步（取时间点之前体积最大的 ${beforeLimit} 个）`,
+  );
+  console.log(
+    `after     ${afterSum.sessions} 个会话 / ${num(afterSum.steps)} 步（最大 ${num(afterSum.maxSteps)} 步）`,
+  );
+
+  const insufficient = (): void => {
+    console.error(`\n样本不足：after 组需要至少 1 个会话且最大步数 ≥ ${MIN_AFTER_STEPS}，当前 ` +
+      `${afterSum.sessions} 个会话 / 最大 ${num(afterSum.maxSteps)} 步。不编数，等攒够再跑。\n`);
+    process.exit(2);
+  };
+
+  if (beforeSum.sessions === 0) {
+    console.error('\n样本不足：时间点之前没有任何会话，没有 before 基线。不编数。\n');
+    process.exit(2);
+    return;
+  }
+  if (afterSum.sessions === 0 || afterSum.maxSteps < MIN_AFTER_STEPS) {
+    insufficient();
+    return;
+  }
+
+  console.log(`\n${bar}`);
+  console.log(
+    pad('指标', 20, 'l') + pad('before', 16) + pad('after', 16) + pad('变化', 14),
+  );
+  console.log(bar);
+  const row = (label: string, b: string, a: string, d: string): void => {
+    console.log(pad(label, 20, 'l') + pad(b, 16) + pad(a, 16) + pad(d, 14));
+  };
+  row(
+    '每千步压缩次数',
+    beforeSum.compactionsPer1000.toFixed(1),
+    afterSum.compactionsPer1000.toFixed(1),
+    pctChange(beforeSum.compactionsPer1000, afterSum.compactionsPer1000),
+  );
+  row(
+    '平均 prompt',
+    num(beforeSum.meanPrompt),
+    num(afterSum.meanPrompt),
+    pctChange(beforeSum.meanPrompt, afterSum.meanPrompt),
+  );
+  row(
+    '峰值 prompt',
+    num(beforeSum.peakPrompt),
+    num(afterSum.peakPrompt),
+    pctChange(beforeSum.peakPrompt, afterSum.peakPrompt),
+  );
+  row(
+    's/步',
+    beforeSum.secondsPerStep.toFixed(2),
+    afterSum.secondsPerStep.toFixed(2),
+    pctChange(beforeSum.secondsPerStep, afterSum.secondsPerStep),
+  );
+  row(
+    'reasoning 占比',
+    (beforeSum.reasoningRatio * 100).toFixed(1) + '%',
+    (afterSum.reasoningRatio * 100).toFixed(1) + '%',
+    ppChange(beforeSum.reasoningRatio, afterSum.reasoningRatio),
+  );
+  row(
+    '缓存命中率',
+    (beforeSum.cacheHit * 100).toFixed(1) + '%',
+    (afterSum.cacheHit * 100).toFixed(1) + '%',
+    ppChange(beforeSum.cacheHit, afterSum.cacheHit),
+  );
+  console.log(bar);
+
+  console.log('\n模型对 after 组的预测（处方策略下的投影 vs 实测）');
+  console.log(
+    `  每步         预测 ${afterSum.predictedSecondsPerStep.toFixed(2)}s    ` +
+      `实测 ${afterSum.secondsPerStep.toFixed(2)}s    误差 ${pctChange(afterSum.secondsPerStep, afterSum.predictedSecondsPerStep)}`,
+  );
+  console.log(
+    `  平均 prompt  预测 ${num(afterSum.predictedMeanPrompt)}    ` +
+      `实测 ${num(afterSum.meanPrompt)}    误差 ${pctChange(afterSum.meanPrompt, afterSum.predictedMeanPrompt)}`,
+  );
+
+  console.log(
+    '\n注意      两组会话是**不同任务**，只是同一套配置前后。任务构成不同，' +
+      '这是趋势证据，不是同任务 A/B。\n',
+  );
+}
+
 export function runCompare(argv: string[]): void {
+  if (argv.includes('--after-apply')) {
+    runAfterApply(argv);
+    return;
+  }
+
   const limitArg = argv.find((a) => a.startsWith('--limit='));
   const target = argv.find((a) => !a.startsWith('--'));
   const rows: Row[] = [];
@@ -105,7 +347,7 @@ export function runCompare(argv: string[]): void {
     const home = process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh');
     const root = path.join(home, 'sessions');
     source = root;
-    for (const f of discoverSessions(root).slice(0, limit)) {
+    for (const f of discoverSessions(root, argv.includes('--newest') ? 'mtime' : 'bytes').slice(0, limit)) {
       const row = analyse(readLogFile(f.path), f.id.slice(0, 22));
       if (row) rows.push(row);
     }
