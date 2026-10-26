@@ -1,0 +1,9 @@
+# 本项目零依赖；这两条是给未来留的
+node_modules/
+dist/
+
+# 运行产物与本机杂项
+*.log
+.tmp/
+.DS_Store
+Thumbs.db

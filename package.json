@@ -1,0 +1,15 @@
+{
+  "name": "thriftflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "惜流 ThriftFlow — dsh 上下文成本治理：回放分析 + 策略求解",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "selftest": "node selftest.ts",
+    "tables": "node selftest.ts --tables",
+    "policy": "node selftest.ts --policy"
+  }
+}
