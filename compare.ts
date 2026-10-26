@@ -107,6 +107,8 @@ interface Measured {
   readonly name: string;
   readonly steps: number;
   readonly mtimeMs: number;
+  /** 会话开始时间（日志首事件的 time）：判断它到底跑在新配置上还是旧配置上 */
+  readonly startedAtMs: number;
   readonly compactionsPer1000: number;
   readonly meanPrompt: number;
   readonly peakPrompt: number;
@@ -134,10 +136,15 @@ function measure(file: SessionFile): Measured | null {
   const prompt = calls.reduce((s, c) => s + c.promptTokens, 0);
   const reasoning = calls.reduce((s, c) => s + c.reasoningTokens, 0);
   const cached = calls.reduce((s, c) => s + c.cacheReadTokens, 0);
+  // 首事件时间 = 会话真正开始的时间；mtime 只说明最后一次写入，不能用来分组
+  const events = log.events as ReadonlyArray<{ readonly time?: unknown } | null | undefined>;
+  const firstEventTime = events.find((e) => typeof e?.time === "number" && Number.isFinite(e.time));
+  const startedAtMs = firstEventTime ? (firstEventTime.time as number) : file.mtimeMs;
   return {
     name: file.id.slice(0, 22),
     steps: calls.length,
     mtimeMs: file.mtimeMs,
+    startedAtMs,
     compactionsPer1000: (log.compactions.length / calls.length) * 1000,
     meanPrompt: stats.meanPrompt,
     peakPrompt: stats.peakPrompt,
@@ -227,7 +234,11 @@ function runAfterApply(argv: string[]): void {
   const afterFiles = all.filter((f) => f.mtimeMs >= record.appliedAtMs);
 
   const before = beforePicked.map(measure).filter((m): m is Measured => m !== null);
-  const after = afterFiles.map(measure).filter((m): m is Measured => m !== null);
+  const afterAll = afterFiles.map(measure).filter((m): m is Measured => m !== null);
+  // 跨过生效点的旧会话：文件还在写（mtime 新），但会话是在 apply 之前开跑的，
+  // 跑的是旧预设，混进 after 组会把结论带偏 —— 剔除。
+  const after = afterAll.filter((m) => m.startedAtMs >= record.appliedAtMs);
+  const droppedAfter = afterAll.length - after.length;
   const beforeSum = summarize(before);
   const afterSum = summarize(after);
 
@@ -245,7 +256,8 @@ function runAfterApply(argv: string[]): void {
     `before    ${beforeSum.sessions} 个会话 / ${num(beforeSum.steps)} 步（取时间点之前体积最大的 ${beforeLimit} 个）`,
   );
   console.log(
-    `after     ${afterSum.sessions} 个会话 / ${num(afterSum.steps)} 步（最大 ${num(afterSum.maxSteps)} 步）`,
+    `after     ${afterSum.sessions} 个会话 / ${num(afterSum.steps)} 步（最大 ${num(afterSum.maxSteps)} 步）` +
+      (droppedAfter > 0 ? `，剔除 ${droppedAfter} 个跨生效点的旧会话` : ""),
   );
 
   const insufficient = (): void => {
