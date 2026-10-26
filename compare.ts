@@ -18,7 +18,9 @@
  * 同时报 A 投影与实测的偏差，好让读者知道这张表的可信区间。
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { sessionCost, type Policy } from './model.ts';
 import { discoverSessions, readLogFile, type SessionFile } from './replay.ts';
 import { deriveStats, prescribe, type Stats } from './prescribe.ts';
@@ -127,6 +129,39 @@ function median(values: readonly number[]): number {
 }
 
 /** 只看实测：把一份会话日志折成可比较的几个数，不做任何投影。 */
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+/** 读会话文件的第一条事件，取它的 time 作为"会话开始时间"（不依赖 FoldedLog 的内部形状）。 */
+function readStartedAtMs(file: SessionFile): number | null {
+  try {
+    const buf = fs.readFileSync(file.path);
+    let head: string;
+    if (buf.length >= 4 && buf.subarray(0, 4).equals(ZSTD_MAGIC)) {
+      // 第一帧就包含日志开头；用第二帧的魔数切分（与 replay.ts 同一套解法）
+      const next = buf.indexOf(ZSTD_MAGIC, 4);
+      const end = next === -1 ? buf.length : next;
+      head = zlib.zstdDecompressSync(buf.subarray(0, end)).toString('utf8');
+    } else {
+      head = buf.subarray(0, 65536).toString('utf8');
+    }
+    let seen = 0;
+    for (const raw of head.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line.length === 0) continue;
+      if (++seen > 200) break;
+      try {
+        const parsed = JSON.parse(line) as { time?: unknown };
+        if (typeof parsed.time === 'number' && Number.isFinite(parsed.time)) return parsed.time;
+      } catch {
+        // 行没写完就跳过
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function measure(file: SessionFile): Measured | null {
   const log = readLogFile(file.path);
   const calls = log.calls;
@@ -137,9 +172,7 @@ function measure(file: SessionFile): Measured | null {
   const reasoning = calls.reduce((s, c) => s + c.reasoningTokens, 0);
   const cached = calls.reduce((s, c) => s + c.cacheReadTokens, 0);
   // 首事件时间 = 会话真正开始的时间；mtime 只说明最后一次写入，不能用来分组
-  const events = log.events as ReadonlyArray<{ readonly time?: unknown } | null | undefined>;
-  const firstEventTime = events.find((e) => typeof e?.time === "number" && Number.isFinite(e.time));
-  const startedAtMs = firstEventTime ? (firstEventTime.time as number) : file.mtimeMs;
+  const startedAtMs = readStartedAtMs(file) ?? file.mtimeMs;
   return {
     name: file.id.slice(0, 22),
     steps: calls.length,
