@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 import { sessionCost, type Policy } from './model.ts';
 import { discoverSessions, readLogFile, type SessionFile } from './replay.ts';
 import { deriveStats, prescribe, type Stats } from './prescribe.ts';
@@ -498,3 +499,8 @@ export function runCompare(argv: string[]): void {
   );
   console.log('注意      这是策略差，不是重新跑一遍模型；要验证真实效果，请 apply 后跑同样的会话再 compare。\n');
 }
+
+const invokedDirectly =
+  process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) runCompare(process.argv.slice(2));
