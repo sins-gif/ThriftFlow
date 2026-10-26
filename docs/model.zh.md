@@ -302,8 +302,36 @@ import {
 } from './model.ts';
 ```
 
-`replay.ts`：`discoverSessions()` / `readSession()` / `estimateGrowth()`。
+`replay.ts`：`discoverSessions()` / `readLogFile()` / `readSession()` / `estimateGrowth()`，
+外加审计 CLI：
+
+```
+node replay.ts mock_log.jsonl           # 明文 jsonl
+node replay.ts <session.v3.jsonl.zstd>  # 真实会话（自动识别 zstd）
+node replay.ts --limit=3                # 不带文件：审计最大的 N 个会话
+```
+
+报告口径：每一轮 = 一次模型调用，字段为 `promptTokens = cacheRead + input`、
+`cacheReadTokens`、`completionTokens`、`durationMs`；判定用 **|总时间残差| < 10%**，
+逐轮 MAPE/中位偏差只作离散度诊断（单轮噪声来自重试与工具时序）。
 `selftest.ts`：CLI（`--tables` / `--policy` / `--flash-only` / `--limit=N`）。
+
+`prescribe.ts`：处方 CLI，**不含任何新数学**，只调用 `recommend()` / `sessionCost()`：
+
+```
+node prescribe.ts mock_log.jsonl   # Diff 表 + 预计节省 + 可直接粘贴的 patch
+node prescribe.ts --limit=1        # 对最大的真实会话开处方
+```
+
+两个配置项的推导：
+
+- `thresholdRatio = θ* / W`：θ\* 是绝对值，所以比例只是把它换算成 dsh 的配置单位。
+- `maxInlineBytes`：用 `n_c/2`（一个结果在压缩周期里的期望剩余寿命）算持有成本
+  `α_M + α_L·n_c/2`（s/token），与"从 spill 重取一次"的代价 `τ0 + t_tool` 相除得到
+  break-even，再取 `min(8,000, break-even)`：8,000 是早前对真实日志的建议值
+  （41 个结果里 8 个超过 8,192 字符，最大 54,045 字符），break-even 保证它不会裁掉
+  "其实更便宜地留在上下文里"的部分。同时把 `tool-result-pruner.thresholdChars`
+  对齐到同一预算，避免"先落盘再剪枝"两道工序。
 
 ## 12 已知局限
 

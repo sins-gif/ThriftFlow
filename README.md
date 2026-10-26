@@ -15,12 +15,24 @@ dsh 的**上下文成本治理**：一个回放分析器 + 一个策略求解器
 无依赖，Node ≥ 22.18（用原生 type-stripping 直接跑 `.ts`）：
 
 ```bash
+node replay.ts mock_log.jsonl   # 成本审计报告（合成日志，可直接跑通）
+node replay.ts <session.v3.jsonl.zstd>  # 审计一个真实会话（自动识别 zstd 多帧）
+node replay.ts --limit=3        # 不带文件：审计 $DSH_HOME 下最大的 3 个会话
+
+node prescribe.ts mock_log.jsonl # 处方：Diff 建议表 + 预计节省 + 可粘贴的 patch
+node prescribe.ts --limit=1      # 对最大的真实会话开处方
+
 node selftest.ts          # 回放 25 个最大会话：拟合 + 样本内/外残差
-node selftest.ts --tables # π 策略表：γ、s、ρ 三条曲线的数值
+node selftest.ts --tables # 策略表：γ、s、ρ 三条曲线的数值
 node selftest.ts --policy # 政策级预测（不读逐步 token）
 ```
 
 读的是 `$DSH_HOME/sessions/**/session.v3.jsonl.zstd`（默认 `~/.dsh/sessions`）。
+
+`mock_log.jsonl` 是**合成日志**（1,320 行 / 34 turn / 400 次调用 / 2 次压缩，约 1 MB），
+用已知真值 `τ0=350ms, α_L=6.0µs, α_M=21µs, α_O=4.0ms` 生成：上下文从 9.2k 涨到 800k
+触发压缩、缓存命中 99.3%、峰值 798.8k——刻意复刻真实会话的病理形状。
+它与 `model.ts` 的内置常数故意不同，所以残差非零（+1.7%）但应通过判定。
 
 ## 当前结论（实测，2026-10）
 
@@ -37,8 +49,10 @@ node selftest.ts --policy # 政策级预测（不读逐步 token）
 | 文件 | 职责 |
 |---|---|
 | `model.ts` | 求解器：常数、band\*/θ\*、成本泛函、三条判据、OLS 标定。纯函数，无 I/O |
-| `replay.ts` | 会话日志回放：zstd 多帧解压 + 事件折叠成逐步观测量 |
-| `selftest.ts` | CLI：回放、拟合、残差、策略表 |
+| `replay.ts` | 会话日志回放 + **成本审计 CLI**：zstd 多帧/明文 jsonl 解压、折叠成轮次记录、打印报告 |
+| `prescribe.ts` | **处方 CLI**：调用 `recommend()`，把推荐值摆成 Diff 表，折算成"分钟 / 万 token"，并输出可粘贴的 patch |
+| `selftest.ts` | 回归自测：回放、拟合、残差、策略表 |
+| `mock_log.jsonl` | 合成日志（400 步，已知真值），用于验证 CLI 全链路 |
 | `docs/model.zh.md` | 推导、判据、常数证据等级、已知局限 |
 
 ## 不做的事
