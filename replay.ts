@@ -710,7 +710,8 @@ function dshHome(): string {
   return process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh');
 }
 
-function main(argv: string[]): void {
+/** `thriftflow audit` / `node replay.ts` 的入口。 */
+export function runAudit(argv: string[]): void {
   const limitArg = argv.find((a) => a.startsWith('--limit='));
   const target = argv.find((a) => !a.startsWith('--'));
 
@@ -741,4 +742,4 @@ function main(argv: string[]): void {
 const invokedDirectly =
   process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-if (invokedDirectly) main(process.argv.slice(2));
+if (invokedDirectly) runAudit(process.argv.slice(2));

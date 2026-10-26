@@ -1,0 +1,17 @@
+{
+  "createdAt": "2026-10-26T22:11:31.088Z",
+  "files": [
+    {
+      "target": ".sandbox\\home\\profiles\\web\\cordis.patch.yml",
+      "backup": ".sandbox\\home\\.thriftflow\\backups\\2026-10-26T22-11-31-085Z\\profiles__web__cordis.patch.yml"
+    },
+    {
+      "target": ".sandbox\\home\\.agent-presets\\thriftflow\\agent.cordis.yml",
+      "backup": ".sandbox\\home\\.thriftflow\\backups\\2026-10-26T22-11-31-085Z\\.agent-presets__thriftflow__agent.cordis.yml"
+    },
+    {
+      "target": ".sandbox\\home\\.agent-presets\\thriftflow\\preset.yml",
+      "backup": ".sandbox\\home\\.thriftflow\\backups\\2026-10-26T22-11-31-085Z\\.agent-presets__thriftflow__preset.yml"
+    }
+  ]
+}

@@ -18,6 +18,7 @@
 import path from 'node:path';
 import { DEFAULT_OBAR, MEASURED, optimalBand, perStep, recommend, sessionCost, type Policy } from './model.ts';
 import { discoverSessions, readLogFile, type CallRecord, type ToolResultObservation } from './replay.ts';
+import { fileURLToPath } from 'node:url';
 
 /** 当前 dsh 默认值（dsh-base / 各 preset 里写死的那些）。 */
 const CURRENT = {
@@ -42,7 +43,7 @@ function median(values: readonly number[]): number {
   return s[Math.floor(s.length / 2)];
 }
 
-interface Stats {
+export interface Stats {
   readonly steps: number;
   readonly windowTokens: number;
   readonly growth: number;
@@ -58,7 +59,7 @@ interface Stats {
   readonly prunedTokens: number;
 }
 
-function deriveStats(log: ReturnType<typeof readLogFile>): Stats {
+export function deriveStats(log: ReturnType<typeof readLogFile>): Stats {
   const calls: readonly CallRecord[] = log.calls;
   const steps = calls.length;
   const first = calls[0];
@@ -91,7 +92,7 @@ function deriveStats(log: ReturnType<typeof readLogFile>): Stats {
 
 // ── 处方 ──────────────────────────────────────────────────────────────────
 
-interface Prescription {
+export interface Prescription {
   readonly theta: number;
   readonly rho: number;
   readonly band: number;
@@ -114,7 +115,7 @@ interface Prescription {
   readonly truncationTokensSaved: number;
 }
 
-function prescribe(stats: Stats, k = MEASURED): Prescription {
+export function prescribe(stats: Stats, k = MEASURED): Prescription {
   const rec = recommend({
     growth: stats.growth,
     s: stats.summaryTokens,
@@ -353,7 +354,8 @@ function dshHome(): string {
   return process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh');
 }
 
-function main(argv: string[]): void {
+/** `thriftflow prescribe` / `node prescribe.ts` 的入口。 */
+export function runPrescribe(argv: string[]): void {
   const limitArg = argv.find((a) => a.startsWith('--limit='));
   const target = argv.find((a) => !a.startsWith('--'));
 
@@ -382,4 +384,7 @@ function main(argv: string[]): void {
   }
 }
 
-main(process.argv.slice(2));
+const invokedDirectly =
+  process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) runPrescribe(process.argv.slice(2));
