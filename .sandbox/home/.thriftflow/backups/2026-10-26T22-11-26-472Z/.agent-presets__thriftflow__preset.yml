@@ -1,6 +1,0 @@
-name: ThriftFlow 节流模式
-description: >-
-  由 thriftflow apply 生成：压缩阈值 85384 tok（= 窗口的 0.085）、
-  保留 30000 tok、工具输出上限 8000 字节。
-  与内置 standard 的唯一差别是这两处 config；升级 dsh 后请重跑 apply --refresh。
-order: 2
