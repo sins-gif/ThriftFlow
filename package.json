@@ -1,16 +1,39 @@
 {
   "name": "thriftflow",
-  "version": "0.1.0",
-  "private": true,
-  "description": "惜流 ThriftFlow — dsh 上下文成本治理：回放分析 + 策略求解",
+  "version": "0.2.0",
+  "description": "Agent runtime cost governance and context optimization CLI",
   "type": "module",
+  "license": "MIT",
+  "author": "sins",
+  "bin": {
+    "thriftflow": "./dist/thriftflow.js"
+  },
   "engines": {
     "node": ">=22.18"
   },
+  "files": [
+    "dist",
+    "*.ts",
+    "docs",
+    "test/fixtures"
+  ],
+  "keywords": [
+    "agent",
+    "llm",
+    "context-engineering",
+    "token-cost",
+    "compaction",
+    "observability",
+    "cli",
+    "dsh"
+  ],
   "scripts": {
-    "audit": "node replay.ts test/fixtures/synthetic-long-session.jsonl",
-    "prescribe": "node prescribe.ts test/fixtures/synthetic-long-session.jsonl",
-    "prescribe:real": "node prescribe.ts --limit=1",
+    "build": "node build.ts",
+    "prepack": "node build.ts",
+    "audit": "node thriftflow.ts audit test/fixtures/synthetic-long-session.jsonl",
+    "prescribe": "node thriftflow.ts prescribe test/fixtures/synthetic-long-session.jsonl",
+    "prescribe:real": "node thriftflow.ts prescribe --limit=1",
+    "compare": "node thriftflow.ts compare test/fixtures/synthetic-long-session.jsonl",
     "selftest": "node selftest.ts",
     "tables": "node selftest.ts --tables",
     "policy": "node selftest.ts --policy"

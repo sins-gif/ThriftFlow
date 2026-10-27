@@ -1,6 +1,7 @@
 # 本项目零依赖；这两条是给未来留的
 node_modules/
 dist/
+*.tgz
 
 # 运行产物与本机杂项
 *.log

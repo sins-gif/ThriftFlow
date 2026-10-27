@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * thriftflow —— 统一入口
  *
@@ -54,7 +55,7 @@ apply 选项：
   --theta= / --retain= / --inline=   手动指定数值
   --dry-run              只打印计划
   --restore=<ts>         从 .thriftflow/backups/<ts> 恢复
-  --uninstall            自动选最近一次备份恢复并清掉空 preset 目录（纯终端，不依赖 dsh UI）
+  --uninstall            剥掉标记块 + 删 preset 目录 + 删生效记录（纯终端，不依赖 dsh UI）
                          成功后写 .thriftflow/applied.json（compare --after-apply 的锚点）
 
 proxy 选项：

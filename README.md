@@ -1,6 +1,28 @@
 # ThriftFlow（惜流）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D22.18-brightgreen.svg)
+![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)
+
 **Agent 运行时的上下文成本治理平面。** 拿你自己的会话日志，算出钱和时间花在哪，再算出一个更好的阈值写回去。
+
+<details open>
+<summary><b>目录</b></summary>
+
+- [🧪 v0.2.0 极端压测战报（Extreme Reasoning / 长思考）](#-v020-极端压测战报extreme-reasoning--长思考)
+- [🚨 两个反直觉的结论](#-两个反直觉的结论)
+- [⚡ 核心机制](#-核心机制)
+- [🏗️ 架构：一条日志怎么变成一处配置](#-架构一条日志怎么变成一处配置)
+- [📊 Benchmark 与 Projection（严格分列）](#-benchmark-与-projection严格分列)
+- [🧾 终端实测输出（真实会话，已脱敏）](#-终端实测输出真实会话已脱敏)
+- [🚀 快速开始](#-快速开始)
+- [🛟 `apply` 排雷与安全卸载](#-apply-排雷与安全卸载)
+- [⚠️ 踩坑笔记](#-踩坑笔记)
+- [不做的事](#不做的事)
+- [已知局限](#已知局限)
+
+</details>
 
 `thresholdRatio: 0.8` 这个默认值，在 1M 窗口下等于「几乎不压缩」：上下文涨到 800k 才动手，而此前的每一步都要把接近窗口上限的上下文过一遍（即便 99.7% 命中缓存，也只是单价便宜，量一分没少）。
 
@@ -44,6 +66,39 @@
 - **`prescribe`**：输出最优配置 Diff + `[ESTIMATED]` 投影 + 可直接粘贴的 patch。
 - **`compare`**：同一份日志的策略 A / 策略 B 受控投影；`--after-apply` 只做**带护栏**的实测（配置不在位就拒绝报数）。
 - **`apply`**：一键写入宿主配置（备份 / 校验 / `--restore` 回滚）。
+
+## 🏗️ 架构：一条日志怎么变成一处配置
+
+从磁盘上的 zstd 到 dsh 里的一行 `thresholdRatio`，全程零依赖、纯函数、可回放。
+
+```mermaid
+flowchart TB
+  subgraph L1["① 日志解析 · replay.ts"]
+    A["session.v3.jsonl.zstd"] --> B["按 magic 28 B5 2F FD 切帧<br/>最长会话 10,309 帧"]
+    B --> C["逐帧解压为事件流"]
+    C --> D["对齐 step/start → assistant/message<br/>提取 usage：cached · fresh · output · reasoning"]
+  end
+  subgraph L2["② 物理模型 · model.ts"]
+    D --> E["时间方程<br/>ms = τ0 + α_L·cached + α_M·fresh + α_O·output"]
+    E --> F["OLS 拟合 R² 0.764<br/>残差判定 小于 10%"]
+    F --> G["闭式解 θ* —— 推导见 docs/model.zh.md"]
+  end
+  subgraph L3["③ 处方 · prescribe.ts / compare.ts"]
+    G --> H["θ* · ρ · maxInlineBytes"]
+    H --> I["[ESTIMATED] 投影<br/>每步耗时 · 平均上下文 · 压缩周期"]
+    I --> J["受控 A/B：同一份日志只换策略"]
+  end
+  subgraph L4["④ 配置注入 · apply.ts"]
+    J --> K["preset 组合 → preset 元数据<br/>必须先落盘"]
+    K --> M["宿主 patch 标记块 # thriftflow:begin<br/>必须最后写"]
+    M --> N["备份 → 回读校验 → applied.json"]
+    N --> O["下一次 audit 实测新策略"]
+  end
+```
+
+四步之间只传数据，不共享状态：`replay.ts` 只产出观测，`model.ts` 只做拟合与预测，`prescribe.ts` 只解闭式解，`apply.ts` 只碰文件。所以任何一步都可以单独重跑、单独验证。
+
+> L4 的内部顺序是**安全边界**而不是风格：`patchReload: live` 下宿主 patch 一落盘就热重载，preset 若还没写完，dsh 会当场撞上 `preset not found`（见 [apply 排雷](#-apply-排雷与安全卸载)）。
 
 ## 📊 Benchmark 与 Projection（严格分列）
 
@@ -265,7 +320,20 @@ prompt    15.52 亿 → 2.29 亿  token   −85.3%
 
 ## 🚀 快速开始
 
-零第三方依赖，Node ≥ 22.18（原生 type-stripping 直接跑 `.ts`）：
+零第三方依赖，Node ≥ 22.18（原生 type-stripping 直接跑 `.ts`）。
+
+### 怎么调用
+
+| 方式 | 命令 | 实际跑的是什么 |
+|---|---|---|
+| 源码态（零构建） | `node thriftflow.ts audit <log>` | 直接跑 `.ts`，Node 原生剥离类型 |
+| 全局安装 | `npm i -g thriftflow` → `thriftflow audit <log>` | `dist/*.js` |
+| 一次性 | `npx thriftflow audit <log>` | `dist/*.js` |
+| 自己构建 | `npm run build` | 把 `.ts` 剥成 `dist/*.js`，`prepack` 会自动跑 |
+
+> **为什么 `bin` 指向 `dist/thriftflow.js` 而不是 `.ts`**：Node 的 type stripping **明确拒绝**执行 `node_modules` 里的 `.ts`
+> —— 实测报 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，`npx` 会当场失败。构建用 Node 内置的
+> `module.stripTypeScriptTypes`，不引 tsc、不加依赖；`dist/` 不入库，由 `prepack` 现场生成，源码仍是唯一真相。
 
 ```bash
 # 1. 审计：时间/token 花在哪
