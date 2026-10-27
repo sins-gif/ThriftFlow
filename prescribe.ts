@@ -290,21 +290,22 @@ function render(
   );
   console.log(bar);
 
-  console.log(`\n${bar}\n预计影响\n`);
+  const EST = '[ESTIMATED]';
+  console.log(`\n${bar}\n${EST} 预计影响（模型投影，非实测；实测请跑 compare --after-apply）\n`);
   console.log(
-    `每步成本（稳态）   ${pad(p.perStepCurrent.toFixed(3) + ' s', 10)} → ${pad(p.perStepProposed.toFixed(3) + ' s', 12)}   ` +
+    `${EST} 每步成本（稳态）   ${pad(p.perStepCurrent.toFixed(3) + ' s', 10)} → ${pad(p.perStepProposed.toFixed(3) + ' s', 12)}   ` +
       `(${humanTime(p.perStepProposed - p.perStepCurrent)}/步)`,
   );
   console.log(
-    `平均上下文（稳态） ${pad(num(p.curSteady.meanContext), 10)} → ${pad(num(p.propSteady.meanContext), 12)}   tok`,
+    `${EST} 平均上下文（稳态） ${pad(num(p.curSteady.meanContext), 10)} → ${pad(num(p.propSteady.meanContext), 12)}   tok`,
   );
   console.log(
-    `压缩周期（稳态）   ${pad(p.curSteady.band / stats.growth >= 1 ? (p.curSteady.band / stats.growth).toFixed(0) : '∞', 10)} → ${pad((p.propSteady.band / stats.growth).toFixed(0), 12)}   步   ` +
+    `${EST} 压缩周期（稳态）   ${pad(p.curSteady.band / stats.growth >= 1 ? (p.curSteady.band / stats.growth).toFixed(0) : '∞', 10)} → ${pad((p.propSteady.band / stats.growth).toFixed(0), 12)}   步   ` +
       `（模型投影压缩 ${num(p.current.compactions)} → ${num(p.proposed.compactions)} 次，非观测值；观测值见 audit 的「压缩 次数」）`,
   );
   if (p.projectedGrowth !== stats.growth) {
     console.log(
-      `每步增长 g         ${pad(num(stats.growth), 10)} → ${pad(num(p.projectedGrowth), 12)}   ` +
+      `${EST} 每步增长 g         ${pad(num(stats.growth), 10)} → ${pad(num(p.projectedGrowth), 12)}   ` +
         `（截断省下 ${num(p.truncationTokensSaved)} tok 工具输出）`,
     );
   }
@@ -314,7 +315,7 @@ function render(
 
   const regimeLabel = p.current.regime === 'steady' ? '稳态' : '瞬态';
   console.log(
-    `\n本会话（${num(stats.steps)} 步，${regimeLabel}）   节省 ${humanTime(p.savedSeconds)}、${humanTokens(p.savedTokens)} token`,
+    `\n${EST} 本会话（${num(stats.steps)} 步，${regimeLabel}）   节省 ${humanTime(p.savedSeconds)}、${humanTokens(p.savedTokens)} token`,
   );
   if (Math.abs(p.savedSeconds) < 1) {
     console.log(
@@ -323,7 +324,7 @@ function render(
     );
   }
   console.log(
-    `外推到 ${num(REFERENCE_STEPS)} 步（稳态）   节省 ${humanTime(steadySavedSeconds)}、${humanTokens(steadySavedTokens)} token`,
+    `${EST} 外推到 ${num(REFERENCE_STEPS)} 步（稳态）   节省 ${humanTime(steadySavedSeconds)}、${humanTokens(steadySavedTokens)} token`,
   );
   console.log(
     `（当前侧投影 ${humanTime(p.current.totalSeconds)} / 实测 ${humanTime(stats.observedSeconds)}，` +

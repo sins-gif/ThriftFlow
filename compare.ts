@@ -171,6 +171,7 @@ function measure(file: SessionFile): Measured | null {
   const p = prescribe(stats);
   const prompt = calls.reduce((s, c) => s + c.promptTokens, 0);
   const reasoning = calls.reduce((s, c) => s + c.reasoningTokens, 0);
+  const completion = calls.reduce((s, c) => s + c.completionTokens, 0);
   const cached = calls.reduce((s, c) => s + c.cacheReadTokens, 0);
   // 首事件时间 = 会话真正开始的时间；mtime 只说明最后一次写入，不能用来分组
   const startedAtMs = readStartedAtMs(file) ?? file.mtimeMs;
@@ -183,7 +184,9 @@ function measure(file: SessionFile): Measured | null {
     meanPrompt: stats.meanPrompt,
     peakPrompt: stats.peakPrompt,
     secondsPerStep: stats.observedPerStep,
-    reasoningRatio: prompt > 0 ? reasoning / prompt : 0,
+    // reasoning 是 completion 的一部分：分母必须是 completion，不是 prompt。
+    // （曾经用 prompt 当分母，得出 0.1% 这种无意义值；audit 的口径是 reasoning/completion）
+    reasoningRatio: completion > 0 ? reasoning / completion : 0,
     cacheHit: prompt > 0 ? cached / prompt : 0,
     predictedSecondsPerStep: p.proposed.totalSeconds / Math.max(1, calls.length),
     // 与实测同口径：整个会话的 prompt 总量 / 步数（含爬升段），
@@ -356,7 +359,7 @@ function runAfterApply(argv: string[]): void {
   );
   console.log(bar);
 
-  console.log('\n模型对 after 组的预测（处方策略下的投影 vs 实测）');
+  console.log('\n[ESTIMATED] 模型对 after 组的预测（处方策略下的投影 vs 实测，负值＝投影偏乐观）');
   console.log(
     `  每步         预测 ${afterSum.predictedSecondsPerStep.toFixed(2)}s    ` +
       `实测 ${afterSum.secondsPerStep.toFixed(2)}s    误差 ${pctChange(afterSum.secondsPerStep, afterSum.predictedSecondsPerStep)}`,
@@ -477,7 +480,7 @@ export function runCompare(argv: string[]): void {
   const projectionBias = (sumA - sumObserved) / sumObserved;
   const steady = rows.filter((r) => r.regimeA === 'steady').length;
 
-  console.log(`\n${bar}\n结论\n`);
+  console.log(`\n${bar}\n结论（[ESTIMATED] 策略投影差，非实机 A/B）\n`);
   console.log(`时间      ${hours(sumA)}h → ${hours(sumB)}h    −${(timeSaving * 100).toFixed(1)}%（${hours(sumA - sumB)} 小时）`);
   console.log(`prompt    ${humanTokens(sumATokens)} → ${humanTokens(sumBTokens)}  token   −${(tokenSaving * 100).toFixed(1)}%`);
   console.log(`每步      ${(sumA / sumSteps).toFixed(2)}s → ${(sumB / sumSteps).toFixed(2)}s`);
