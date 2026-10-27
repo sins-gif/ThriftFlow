@@ -1,7 +1,7 @@
 /**
  * prescribe.ts —— 把"咨询"变成配置处方
  *
- *   node prescribe.ts mock_log.jsonl        # 对一份日志出 Diff 建议表
+ *   node prescribe.ts test/fixtures/synthetic-long-session.jsonl   # 对合成夹具出 Diff 建议表
  *   node prescribe.ts <session.v3.jsonl.zstd>
  *   node prescribe.ts --limit=1             # 不带文件：取 $DSH_HOME 下最大的 N 个会话
  *
@@ -300,7 +300,7 @@ function render(
   );
   console.log(
     `压缩周期（稳态）   ${pad(p.curSteady.band / stats.growth >= 1 ? (p.curSteady.band / stats.growth).toFixed(0) : '∞', 10)} → ${pad((p.propSteady.band / stats.growth).toFixed(0), 12)}   步   ` +
-      `（本会话实际压缩 ${num(p.current.compactions)} → ${num(p.proposed.compactions)} 次）`,
+      `（模型投影压缩 ${num(p.current.compactions)} → ${num(p.proposed.compactions)} 次，非观测值；观测值见 audit 的「压缩 次数」）`,
   );
   if (p.projectedGrowth !== stats.growth) {
     console.log(

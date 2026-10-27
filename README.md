@@ -51,18 +51,96 @@
 > `compare --after-apply` 才是实测；本机 after 组目前只有 20 步，**低于 50 步阈值，工具拒绝报数**——不编。
 > 我自己 applied 的值就躺在这张表里：`~/.dsh/.thriftflow/applied.json`（θ=64,993 / ρ=30,000 / maxInlineBytes=4,500）。
 
+## 🧾 实测输出（真实会话，已脱敏）
+
+下面两份是**原样终端输出**，只把本机路径与会话 id 换成 `<redacted>`，逐轮明细表（3,233 行）截掉。
+
+### `audit` —— 观测值
+
+```text
+═══ ThriftFlow 成本审计 ═══
+源文件    <redacted>/session.v3.jsonl.zstd  (zstd, 17.8 MB, 17,998 事件)
+会话      <redacted>
+模型      deepseek-flash   窗口 1,000,000   轮次 109 turn / 3,233 calls
+
+总量
+实际模型时间    20485.85 s
+预测模型时间    20484.56 s   残差    -0.0%
+逐轮 MAPE          10.6%
+prompt 总量     1,367,582,096 tok  （缓存命中 99.7%）
+completion       2,659,422 tok  （reasoning 45.4%）
+平均 / 峰值        423,007 / 793,100 tok
+工具结果修剪       170,377 tok  （compaction/prune）
+
+时间构成（按 model.ts 预测）
+固定开销 τ0        7.7%    1571.24 s
+命中 prefill      39.6%    8116.09 s   α_L=5.950µs/tok
+未命中 prefill     0.4%      74.18 s   α_M=20.992µs/tok
+生成 α_O          52.3%   10723.06 s   α_O=4.032ms/tok
+
+压缩
+次数 4   实测 124.10s / 预测 123.53s (-0.5%)   摘要均值 3,514 tok
+峰值占窗口 79.3%；已接近容量压力，压缩同时兼作容量回收。
+
+判定
+总时间残差   -0.0%  →  通过（判定口径：|总时间残差| < 10%）
+逐轮离散  MAPE 10.6% / 中位 8.6%  （诊断指标，不走判定：单轮噪声来自重试与工具时序）
+偏差最大的 3 轮：
+  第  1967 轮  prompt    13,632  实测  40683ms  预测   1482ms    -96.4%
+  第  2573 轮  prompt    13,557  实测  37468ms  预测   1774ms    -95.3%
+  第  1220 轮  prompt    14,348  实测  35274ms  预测   1674ms    -95.3%
+```
+
+### `prescribe` —— 处方（模型投影，非观测）
+
+```text
+═══ ThriftFlow 处方（prescribe）═══
+源文件    <redacted>/session.v3.jsonl.zstd
+会话      <redacted>   模型 deepseek-flash   窗口 1,000,000
+规模      3,233 步   平均上下文 423,007 / 峰值 793,100   实测 5.69 小时（6.34 s/步）
+观测量    g=235 tok/步   ō=823 tok/步   s=3,514 tok   工具结果 3,558 个
+
+Diff 建议表
+配置项                                          当前          建议  依据
+──────────────────────────────────────────────────────────────────────────────
+compaction-basic.thresholdRatio               0.8000        0.0650  θ* = 64,993（绝对值）；band 34,993 = √(2g[α_M(2ρ+s)+α_O·s]/(γ·α_L))
+spill-policy.maxInlineBytes                   50,000         4,500  464.0µs/token × n_c/2(74 步) → break-even 4.5k 字节（重取一次 0.51s）
+compaction-basic.retainTokens（附带）        160,000        30,000  ρ 是约束不是解：再压到 10k 只值 7 分钟，却要押 γ 上涨 3.3%
+tool-result-pruner.thresholdChars（附带）       8,192         4,500  与 spill 预算对齐，避免"先落盘再剪枝"两道工序
+──────────────────────────────────────────────────────────────────────────────
+
+预计影响
+
+每步成本（稳态）      6.677 s →      4.174 s   (−2.5 秒/步)
+平均上下文（稳态）    480,000 →       47,497   tok
+压缩周期（稳态）         2723 →          149   步   （模型投影压缩 2 → 17 次，非观测值；观测值见 audit 的「压缩 次数」）
+每步增长 g                235 →          181   （截断省下 174,109 tok 工具输出）
+
+本会话（3,233 步，稳态）   节省 2.25 小时、13.98 亿 token
+外推到 1,000 步（稳态）   节省 41.7 分钟、4.33 亿 token
+（当前侧投影 6.00 小时 / 实测 5.69 小时，模型误差 5.4%）
+```
+
+**读这两份输出时必须知道的四件事**：
+
+1. **`audit` 是观测，`prescribe` 是投影。** 前者从日志里数出来的，后者是方程换参数算出来的。别把第二份当实测效果。
+2. **总量残差 −0.0% 与逐轮 MAPE 10.6% 同时成立。** 总残差是拿整场会话的秒数总量比（20485.85 vs 20484.56），逐轮则含重试与工具时序噪声——偏差最大的 3 轮实测 35–41 s、预测 1.5 s，属于 `docs/model.zh.md` §12 明确列为**未建模**的项。
+3. **「节省 13.98 亿 token」比实测 prompt 总量 13.68 亿还大**，因为节省是拿**投影基线**（3,233×480,000 = 15.52 亿）减出来的，不是拿实测总量减的。引用时请连同基线口径一起引用。
+4. **观测到 4 次压缩，投影算 2 次。** 两个数都对，但含义不同——`prescribe` 的压缩次数是 `ceil(steps·g/band)` 的解析值。
+
 ## 🚀 快速开始
 
 零第三方依赖，Node ≥ 22.18（原生 type-stripping 直接跑 `.ts`）：
 
 ```bash
-# 1. 审计：时间/token 花在哪（mock_log.jsonl 是合成日志，可直接跑通）
-node thriftflow.ts audit mock_log.jsonl
-node thriftflow.ts audit                      # 不带参数：审计最大的 3 个真实会话
+# 1. 审计：时间/token 花在哪
+#    带 fixture = 合成日志，clone 下来即可跑；不带参数 = 本机最大的 3 个真实会话
+node thriftflow.ts audit test/fixtures/synthetic-long-session.jsonl
+node thriftflow.ts audit
 
 # 2. 处方：最优配置 Diff + 预计节省 + 可粘贴 patch
 node thriftflow.ts prescribe                  # 默认对最大的真实会话开方
-node thriftflow.ts prescribe mock_log.jsonl
+node thriftflow.ts prescribe test/fixtures/synthetic-long-session.jsonl
 
 # 3. 落地：写进 dsh 配置（先 --dry-run 看要改哪三处）
 node thriftflow.ts apply --dry-run
@@ -71,10 +149,14 @@ node thriftflow.ts apply --from=<your-session.zstd>
 # 4. 事后验证：按生效时间切实测 before/after
 node thriftflow.ts compare --after-apply
 
-# 回归自测
+# 回归自测（需要 ≥2 个真实会话；单份夹具替代不了）
 node selftest.ts                              # 25 个最大会话：拟合 + 样本内外残差
 node selftest.ts --tables                     # γ / s / ρ 三条曲线
 ```
+
+> **真实日志不入库**：`$DSH_HOME/sessions/**/*.zstd` 已在 `.gitignore` 里。
+> 仓库只带 `test/fixtures/` 下的人工合成夹具——它刻意包含长上下文、缓存未命中、
+> 强制压缩、工具截断四类边缘情况，见 [`test/fixtures/README.md`](test/fixtures/README.md)。
 
 `apply` 支持 `--restore=<ts>` 回滚；成功后写 `.thriftflow/applied.json`，作为 `compare --after-apply` 的切分锚点。
 

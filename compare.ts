@@ -3,7 +3,7 @@
  *
  *   node thriftflow.ts compare                      # 最大的 25 个会话（策略投影对照）
  *   node thriftflow.ts compare --limit=50
- *   node thriftflow.ts compare mock_log.jsonl
+ *   node thriftflow.ts compare test/fixtures/synthetic-long-session.jsonl
  *   node thriftflow.ts compare --newest --limit=5   # 最新的 5 个会话
  *   node thriftflow.ts compare --after-apply        # 按 apply 生效时间切分，只比实测
  *

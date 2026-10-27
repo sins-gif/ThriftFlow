@@ -306,7 +306,7 @@ import {
 外加审计 CLI：
 
 ```
-node replay.ts mock_log.jsonl           # 明文 jsonl
+node replay.ts test/fixtures/synthetic-long-session.jsonl   # 合成夹具（明文 jsonl）
 node replay.ts <session.v3.jsonl.zstd>  # 真实会话（自动识别 zstd）
 node replay.ts --limit=3                # 不带文件：审计最大的 N 个会话
 ```
@@ -319,7 +319,7 @@ node replay.ts --limit=3                # 不带文件：审计最大的 N 个�
 `prescribe.ts`：处方 CLI，**不含任何新数学**，只调用 `recommend()` / `sessionCost()`：
 
 ```
-node prescribe.ts mock_log.jsonl   # Diff 表 + 预计节省 + 可直接粘贴的 patch
+node prescribe.ts test/fixtures/synthetic-long-session.jsonl   # Diff 表 + 预计节省 + 可直接粘贴的 patch
 node prescribe.ts --limit=1        # 对最大的真实会话开处方
 ```
 

@@ -2,7 +2,7 @@
  * replay.ts —— dsh 会话日志回放 / 成本审计 CLI
  *
  * 用法：
- *   node replay.ts mock_log.jsonl      # 明文 jsonl（mock 验证用）
+ *   node replay.ts test/fixtures/synthetic-long-session.jsonl   # 合成夹具（明文 jsonl，可复现）
  *   node replay.ts <session.v3.jsonl.zstd>   # 真实会话（自动识别 zstd 多帧）
  *   node replay.ts --limit=5           # 不带文件时，回放 $DSH_HOME 下最大的 5 个会话
  *

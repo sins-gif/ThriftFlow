@@ -8,8 +8,8 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "audit": "node replay.ts mock_log.jsonl",
-    "prescribe": "node prescribe.ts mock_log.jsonl",
+    "audit": "node replay.ts test/fixtures/synthetic-long-session.jsonl",
+    "prescribe": "node prescribe.ts test/fixtures/synthetic-long-session.jsonl",
     "prescribe:real": "node prescribe.ts --limit=1",
     "selftest": "node selftest.ts",
     "tables": "node selftest.ts --tables",

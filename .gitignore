@@ -8,3 +8,18 @@ dist/
 .DS_Store
 Thumbs.db
 .sandbox/
+
+# ── 真实会话日志：绝不入库 ─────────────────────────────────────────────────
+# 两个理由：① 里面是完整对话与代码，属于隐私；② zstd 单文件可达数十 MB，
+# 频繁变动会让仓库永久臃肿（进了历史就删不干净）。
+# 本地跑 audit / prescribe 时直接指向 $DSH_HOME 下的路径即可，不需要复制进仓库。
+*.zstd
+*.jsonl.zstd
+sessions/
+
+# 会话索引库同理
+*.db
+*.sqlite
+*.sqlite3
+
+# 注意：不要加 `*.jsonl`——测试夹具 test/fixtures/*.jsonl 是要入库的。
