@@ -35,7 +35,7 @@ const HELP = `
   thriftflow prescribe  [<log>] [--limit=N] [--newest]   处方：Diff 建议表 + 预计节省 + patch
   thriftflow compare    [<log>] [--limit=N] [--newest] [--after-apply]
                                              before/after 对照：处方到底省多少
-  thriftflow apply      [--dry-run]           把处方写进 dsh 配置（带备份，可 --restore）
+  thriftflow apply      [--dry-run]           把处方写进 dsh 配置（带备份，可 --restore / --uninstall）
   thriftflow proxy      [--port=N]            本地代理：在请求出本机前压阈值
 
 通用选项：
@@ -54,6 +54,7 @@ apply 选项：
   --theta= / --retain= / --inline=   手动指定数值
   --dry-run              只打印计划
   --restore=<ts>         从 .thriftflow/backups/<ts> 恢复
+  --uninstall            自动选最近一次备份恢复并清掉空 preset 目录（纯终端，不依赖 dsh UI）
                          成功后写 .thriftflow/applied.json（compare --after-apply 的锚点）
 
 proxy 选项：

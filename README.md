@@ -63,11 +63,18 @@
 
 1. **n=1 在统计上没有意义。** 单次会话的任务构成、工具分布、重试风暴都不可控，拿它算误差只是噪声。
 2. **宿主配置不受本项目控制。** 本仓库在自己的机器上就踩过一次：
-   apply 于 `10-26 22:56` 成功写入，`10-27 07:09` 用户为修 dsh 启动崩溃**手动把 `cordis.patch.yml` 清空成 `[]`**、`.agent-presets/thriftflow/` 一并消失。
+   apply 于 `10-26 22:56` 成功写入，但 **dsh 随即起不来**，用户只好手动把 `cordis.patch.yml` 清空成 `[]`、删掉 `.agent-presets/thriftflow/`。
    于是 after 组全程跑在默认 `0.8W` 下——峰值 177,913（阈值的 2.7 倍）、压缩 0 次，与"阈值生效"完全矛盾。
    那一版 README 报出的 `−78.7% / −41.0%` 因此**全部作废**：那是任务差异，不是收益。
 
-**护栏**：`compare --after-apply` 现在先校验 `applied.json` 的取值是否还在磁盘配置里，不在就 `exit 2` 拒绝报数（终端输出见下）。**宁可不出数，也不出一个错的数。**
+**崩溃根因（已定位并修复）**：`apply` 原先**先写宿主 patch**（把 `default` 改成 `thriftflow`）、**后建 preset 目录**。
+而 web profile 是 `patchReload: live`——配置一落盘就热重载，此刻 `thriftflow` 还不存在，于是
+`presets: preset "thriftflow" not found`。现在顺序反过来：**preset 组合与元数据先写完，宿主 patch 最后写**，
+并在写入前做形状自检、写宿主 patch 前断言 preset 已落盘。
+
+**护栏**：`compare --after-apply` 先校验 `applied.json` 的取值是否还在磁盘配置里，不在就 `exit 2` 拒绝报数（输出见下）。
+**回滚**：`apply --uninstall` 纯终端可用，不依赖 dsh 起来——直接剥掉标记块、删 preset 目录、删生效记录。
+`down` 掉的 dsh 也能靠这条命令救回来。
 
 ### ④ 受控 A/B —— 唯一可引用的业绩口径
 
@@ -148,7 +155,9 @@ completion       2,659,422 tok  （reasoning 45.4%）
 > 「节省 13.23 亿 token」几乎等于实测 prompt 总量 13.68 亿，因为它是拿**投影基线**
 > （3,233 × 480,000 = 15.52 亿）减的，不是拿实测总量减的。引用必须连口径一起引用。
 
-### `compare --after-apply` —— 护栏拒绝输出（当前真实状态）
+### `compare --after-apply` —— 两道护栏，都拒绝输出
+
+第一道：`applied.json` 还在、但配置已被清空（下面这段是当时的原样输出）。
 
 ```text
 配置不在位：after 组没有吃到处理，拒绝报数。
@@ -160,6 +169,14 @@ completion       2,659,422 tok  （reasoning 45.4%）
   applied.json 里记录的取值已经不在配置文件里了。此时切出来的 after 组跑的是旧配置，
   before/after 的差值只是任务构成差异，不能当收益。
   先重跑 `node thriftflow.ts apply`，确认落盘并热加载，再攒 after 组。
+```
+
+第二道：跑过 `--uninstall` 之后，生效记录本身被删除，连"哪一刻是分界"都没有了：
+
+```text
+没有生效记录：<redacted>/.thriftflow/applied.json
+  这条记录由 apply 成功后写入（--dry-run 不写）。
+  先跑一次真的 apply，之后再用 compare --after-apply。
 ```
 
 ### `compare` —— 受控 A/B（④ 的原始输出）
@@ -206,6 +223,9 @@ node thriftflow.ts compare test/fixtures/synthetic-long-session.jsonl
 node thriftflow.ts apply --dry-run
 node thriftflow.ts apply --from=<your-session.zstd>
 
+# 4b. 出事就卸载：纯终端，dsh 起不来也能用
+node thriftflow.ts apply --uninstall
+
 # 5. 事后实测：需配置在位 + ≥50 步，否则拒绝报数
 node thriftflow.ts compare --after-apply
 
@@ -224,6 +244,9 @@ node selftest.ts --tables                     # γ / s / ρ 三条曲线
 
 ## ⚠️ 踩坑笔记
 
+- **`patchReload: live` 下，写入顺序就是安全性。** 宿主 patch 一落盘就会热重载并解析 `default: <preset>`。
+  如果先改 `default`、后建 preset 目录，热重载会撞上"preset not found"，**dsh 当场起不来**。
+  正确顺序：preset 组合 → preset 元数据 → 宿主 patch。`apply` 已按此排序，并在写宿主 patch 前断言 preset 已落盘。
 - **`g` 必须是「上下文每步增量」，不是「缓存未命中的 prefill 体积」。** 这是本项目修过的最贵的 bug：
   旧实现用 `median(freshTokens)`，校准会话上给出 **235**，真实值是 **1,273**（差 5.4 倍）。
   fresh 受缓存驱逐影响、且中位数把工具输出那几步的增长整个抹掉。后果是 `θ*` 被低估到 64,993（正确值 111,445），

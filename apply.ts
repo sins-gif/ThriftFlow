@@ -50,6 +50,10 @@ interface Plan {
   readonly values: Values;
   readonly presetId: string;
   readonly presetSource: string;
+  /** 指向 `default: <presetId>` 的那份宿主 patch；必须**最后**写（见 writePlan）。 */
+  readonly hostFile: string;
+  /** agent preset 的组合文件；必须先于宿主 patch 落盘。 */
+  readonly presetFile: string;
 }
 
 function dshHomeDefault(): string {
@@ -251,28 +255,40 @@ function buildPlan(argv: readonly string[]): { plan: Plan; home: string; profile
     `# 唯一差别：compaction-basic.thresholdRatio/retainTokens、tool-result-pruner.thresholdChars\n` +
     `# 升级 dsh 后重跑 \`thriftflow apply\` 刷新本文件。\n`;
 
+  const compositionFile = path.join(presetDir, 'agent.cordis.yml');
+  const metadataFile = path.join(presetDir, 'preset.yml');
+
+  // 顺序是安全边界，不是风格：web profile 是 `patchReload: live`，
+  // 宿主 patch 一旦落盘就会触发热重载并去解析 `default: <presetId>`。
+  // 如果那时 preset 目录还没写出来，dsh 当场报
+  // `presets: preset "thriftflow" not found`——这正是本项目踩过的启动崩溃。
+  // 所以：先把 preset 完整落盘，最后再改指向它的宿主 patch。
   const files: PlanFile[] = [
     {
-      file: hostFile,
-      before: hostBefore,
-      after: upsertBlock(hostBefore, buildHostBlock(values, presetId)),
-      reason: '宿主层：spill-policy.maxInlineBytes + 默认 preset 指向 ' + presetId,
-    },
-    {
-      file: path.join(presetDir, 'agent.cordis.yml'),
-      before: readText(path.join(presetDir, 'agent.cordis.yml')),
+      file: compositionFile,
+      before: readText(compositionFile),
       after: header + withPruner,
       reason: `agent preset：compaction-basic + tool-result-pruner（源自 ${preset}）`,
     },
     {
-      file: path.join(presetDir, 'preset.yml'),
-      before: readText(path.join(presetDir, 'preset.yml')),
+      file: metadataFile,
+      before: readText(metadataFile),
       after: presetMetadata(presetId, values),
       reason: 'preset 元数据（名称/描述/排序）',
     },
+    {
+      file: hostFile,
+      before: hostBefore,
+      after: upsertBlock(hostBefore, buildHostBlock(values, presetId)),
+      reason: '宿主层：spill-policy.maxInlineBytes + 默认 preset 指向 ' + presetId + '（最后写）',
+    },
   ];
 
-  return { plan: { files, values, presetId, presetSource: source }, home, profile };
+  return {
+    plan: { files, values, presetId, presetSource: source, hostFile, presetFile: compositionFile },
+    home,
+    profile,
+  };
 }
 
 function unifiedDiff(before: string | null, after: string, file: string): string {
@@ -350,34 +366,142 @@ function restore(home: string, stamp: string): void {
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as {
     files: Array<{ target: string; backup: string | null }>;
   };
+  const removed: string[] = [];
   for (const entry of manifest.files) {
     if (entry.backup === null) {
       if (fs.existsSync(entry.target)) fs.rmSync(entry.target);
+      removed.push(entry.target);
       console.log(`  删除（原本不存在） ${entry.target}`);
     } else {
       writeAtomic(entry.target, fs.readFileSync(entry.backup, 'utf8'));
       console.log(`  恢复 ${entry.target}`);
     }
   }
+  // 回滚后 preset 目录会剩一个空壳；留着会占住 id，下次 apply 会报"已存在"。
+  for (const target of removed) pruneEmptyDirs(path.dirname(target));
 }
 
 function verify(plan: Plan): string[] {
   const problems: string[] = [];
-  const host = plan.files[0];
-  const hostText = readText(host.file) ?? '';
-  if (!hostText.includes(MARK_BEGIN)) problems.push(`${host.file}: 缺少标记块`);
+  const hostText = readText(plan.hostFile) ?? '';
+  if (!hostText.includes(MARK_BEGIN)) problems.push(`${plan.hostFile}: 缺少标记块`);
   if (!hostText.includes(`maxInlineBytes: ${plan.values.maxInlineBytes}`)) {
-    problems.push(`${host.file}: 缺少 maxInlineBytes`);
+    problems.push(`${plan.hostFile}: 缺少 maxInlineBytes`);
   }
-  const preset = plan.files[1];
-  const presetText = readText(preset.file) ?? '';
+  const presetText = readText(plan.presetFile) ?? '';
   if (!presetText.includes(`retainTokens: ${plan.values.rho}`)) {
-    problems.push(`${preset.file}: 缺少 retainTokens`);
+    problems.push(`${plan.presetFile}: 缺少 retainTokens`);
   }
   if (!presetText.includes(`thresholdChars: ${plan.values.prunerChars}`)) {
-    problems.push(`${preset.file}: 缺少 thresholdChars`);
+    problems.push(`${plan.presetFile}: 缺少 thresholdChars`);
   }
   return problems;
+}
+
+/**
+ * 写入前的低成本自检。
+ *
+ * 目标是抓「loader 连开头都读不下去」的形态，而不是完整校验 YAML——本项目零依赖，
+ * 不引 YAML 解析器。真正致命的两种：顶层不是列表、缩进里混进制表符。
+ */
+function preflight(plan: Plan): string[] {
+  const problems: string[] = [];
+  const of = (file: string): string => plan.files.find((f) => f.file === file)?.after ?? '';
+
+  const checkTopLevelList = (file: string, text: string): void => {
+    const first = text
+      .split(/\r?\n/)
+      .find((line) => line.trim() !== '' && !line.trimStart().startsWith('#'));
+    if (first === undefined) {
+      problems.push(`${file}: 有效内容为空`);
+      return;
+    }
+    if (!first.trimStart().startsWith('- ') && first.trim() !== '[]') {
+      problems.push(`${file}: 顶层不是列表（首行有效内容 ${JSON.stringify(first.slice(0, 40))}）`);
+    }
+  };
+
+  const composition = of(plan.presetFile);
+  checkTopLevelList(plan.presetFile, composition);
+  if (!composition.includes('- id: compaction-basic')) {
+    problems.push(`${plan.presetFile}: 找不到 compaction-basic 行`);
+  }
+
+  const host = of(plan.hostFile);
+  checkTopLevelList(plan.hostFile, host);
+  if (host.includes(MARK_BEGIN) !== host.includes(MARK_END)) {
+    problems.push(`${plan.hostFile}: thriftflow 标记块不配对`);
+  }
+
+  for (const f of plan.files) {
+    if (f.after.includes('\t')) problems.push(`${f.file}: 含制表符，YAML 缩进非法`);
+  }
+  return problems;
+}
+
+/** 从宿主 patch 里剥掉 thriftflow 标记块（连同块内的行）。 */
+function stripThriftflowBlock(text: string): string {
+  const begin = text.indexOf(MARK_BEGIN);
+  const end = text.indexOf(MARK_END);
+  if (begin === -1 || end === -1 || end < begin) return text;
+  return text.slice(0, begin) + text.slice(end + MARK_END.length);
+}
+
+/**
+ * 卸载：不依赖备份内容，直接回到「配置里没有 thriftflow」的状态。
+ *
+ * 为什么不用 `--restore`：备份存的是**上一次 apply 之前**的现场，而那份现场本身
+ * 可能已经带着更早一轮的 thriftflow 块。真正安全的目标状态只有一个——
+ * 宿主 patch 里没有我们的块、preset 目录不存在、生效记录不再指向它。
+ *
+ * 全程只碰文件，不需要 dsh 起来，也不依赖任何 UI。
+ */
+function uninstallEverything(home: string, profile: string, presetId: string): void {
+  const hostFile = path.join(home, 'profiles', profile, 'cordis.patch.yml');
+  const text = readText(hostFile);
+  if (text === null) {
+    console.log(`  跳过（文件不存在） ${hostFile}`);
+  } else if (!text.includes(MARK_BEGIN)) {
+    console.log(`  跳过（没有 thriftflow 标记块） ${hostFile}`);
+  } else {
+    const stripped = stripThriftflowBlock(text);
+    const hasRows = stripped.split(/\r?\n/).some((line) => line.trimStart().startsWith('- '));
+    // 剥完只剩注释时补一个 `[]`：空文件在 loader 那边读成 null，同样起不来。
+    const next = hasRows ? `${stripped.trimEnd()}\n` : `${stripped.trimEnd()}\n[]\n`;
+    writeAtomic(hostFile, next);
+    console.log(`  已移除标记块 ${hostFile}`);
+  }
+
+  const presetDir = path.join(home, '.agent-presets', presetId);
+  if (fs.existsSync(presetDir)) {
+    fs.rmSync(presetDir, { recursive: true, force: true });
+    pruneEmptyDirs(path.dirname(presetDir));
+    console.log(`  已删除 preset 目录 ${presetDir}`);
+  } else {
+    console.log(`  跳过（目录不存在） ${presetDir}`);
+  }
+
+  const recordFile = appliedRecordPath(home);
+  if (fs.existsSync(recordFile)) {
+    fs.rmSync(recordFile);
+    console.log(`  已删除生效记录 ${recordFile}（compare --after-apply 不会再拿旧锚点报数）`);
+  }
+}
+
+/** 删掉空目录（回滚后 preset 目录会剩下一个空壳，留着会占住 id）。 */
+function pruneEmptyDirs(dir: string): void {
+  let current = dir;
+  for (;;) {
+    try {
+      if (fs.readdirSync(current).length > 0) return;
+      fs.rmdirSync(current);
+    } catch {
+      return;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
 }
 
 // ── 生效记录（compare --after-apply 的锚点）───────────────────────────────
@@ -496,6 +620,24 @@ export function runApply(argv: string[]): void {
   console.log('\n═══ thriftflow apply ═══');
   console.log(`DSH_HOME  ${home}`);
 
+  const uninstall = argv.includes('--uninstall');
+  if (uninstall) {
+    const profile = flagValue(argv, 'profile') ?? 'web';
+    const presetId = flagValue(argv, 'preset-id') ?? 'thriftflow';
+    try {
+      uninstallEverything(home, profile, presetId);
+    } catch (error) {
+      console.error(`\n卸载失败：${(error as Error).message}\n`);
+      process.exit(1);
+      return;
+    }
+    console.log('\n已回到安全状态。若 dsh 在跑，patch 层会热重载（web profile 为 patchReload: live）。');
+    console.log('若 dsh 仍然起不来，手工确认：');
+    console.log(`  · ${path.join(home, 'profiles', profile, 'cordis.patch.yml')} 里没有 thriftflow 标记块`);
+    console.log(`  · ${path.join(home, '.agent-presets', presetId)} 已不存在\n`);
+    return;
+  }
+
   if (restoreStamp) {
     console.log(`恢复备份  ${restoreStamp}`);
     restore(home, restoreStamp);
@@ -547,9 +689,28 @@ export function runApply(argv: string[]): void {
     return;
   }
 
+  const blockers = preflight(plan);
+  if (blockers.length > 0) {
+    console.error('\n中止（未写入任何文件）：生成结果自检不通过。');
+    for (const b of blockers) console.error(`  ✗ ${b}`);
+    console.error('');
+    process.exit(1);
+    return;
+  }
+
   const backupRoot = backup(home, plan.files);
   console.log(`\n已备份到  ${backupRoot}`);
-  for (const f of plan.files) writeAtomic(f.file, f.after);
+  for (const f of plan.files) {
+    // 顺序保证：preset 组合必须先落盘，宿主 patch 才能把 default 指过去。
+    // web profile 是 patchReload: live，写早一步就是热重载瞬间 "preset not found"。
+    if (f.file === plan.hostFile && !fs.existsSync(plan.presetFile)) {
+      console.error(`\n中止：preset 组合文件未落盘（${plan.presetFile}），拒绝写宿主 patch。`);
+      console.error(`回滚：node thriftflow.ts apply --restore ${path.basename(backupRoot)}\n`);
+      process.exit(1);
+      return;
+    }
+    writeAtomic(f.file, f.after);
+  }
 
   const problems = verify(plan);
   if (problems.length > 0) {
