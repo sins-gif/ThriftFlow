@@ -14,6 +14,7 @@
   "files": [
     "dist",
     "*.ts",
+    "dashboard.html",
     "docs",
     "test/fixtures"
   ],
@@ -36,6 +37,15 @@
     "compare": "node thriftflow.ts compare test/fixtures/synthetic-long-session.jsonl",
     "selftest": "node selftest.ts",
     "tables": "node selftest.ts --tables",
-    "policy": "node selftest.ts --policy"
+    "policy": "node selftest.ts --policy",
+    "sim": "node simulator.ts",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.7.5",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.6.3"
   }
 }
