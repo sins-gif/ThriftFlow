@@ -220,7 +220,7 @@ function presetMetadata(presetId: string, values: Values): string {
     `description: >-`,
     `  由 thriftflow apply 生成：压缩阈值 ${values.theta} tok（= 窗口的 ${(values.theta / values.windowTokens).toFixed(3)}）、`,
     `  保留 ${values.rho} tok、工具输出上限 ${values.maxInlineBytes} 字节。`,
-    `  与内置 standard 的唯一差别是这两处 config；升级 dsh 后请重跑 apply --refresh。`,
+    `  与内置 standard 的唯一差别是这两处 config。升级 dsh 后重跑 apply 即可幂等刷新（无 --refresh 参数）。`,
     `order: 2`,
     '',
   ].join('\n');

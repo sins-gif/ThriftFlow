@@ -13,9 +13,18 @@ Thumbs.db
 # 两个理由：① 里面是完整对话与代码，属于隐私；② zstd 单文件可达数十 MB，
 # 频繁变动会让仓库永久臃肿（进了历史就删不干净）。
 # 本地跑 audit / prescribe 时直接指向 $DSH_HOME 下的路径即可，不需要复制进仓库。
+#
+# 校验（必须两条都为空输出）：
+#   git ls-files "*.zstd" "*.zst" "*.jsonl"      # 只应看到 test/fixtures/*.jsonl
+#   git check-ignore -v <你的日志路径>            # 应命中本文件
 *.zstd
 *.jsonl.zstd
+*.zst
+*.zstd.*
 sessions/
+
+# apply 的备份 / 生效记录：只在 --dsh-home 指进仓库时才会落在这儿
+.thriftflow/
 
 # 会话索引库同理
 *.db

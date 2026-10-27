@@ -4,6 +4,26 @@
 
 `thresholdRatio: 0.8` 这个默认值，在 1M 窗口下等于「几乎不压缩」：上下文涨到 800k 才动手，而此前的每一步都要把接近窗口上限的上下文过一遍（即便 99.7% 命中缓存，也只是单价便宜，量一分没少）。
 
+## 🧪 v0.2.0 极端压测战报（Extreme Reasoning / 长思考）
+
+**这是本项目最核心的那次 Benchmark**：让 Agent 在 2 轮对话里从零完成「分布式 TCC 库存扣减系统」——先做 CP / 超卖 / 三类异常的推演，再写出可运行实现。目的只有一个：**检查压缩策略会不会把长链路推理压断。**
+
+| 观测项 | 值 | 口径 |
+|---|---|---|
+| 内部逻辑步数 | 14 步 | 宿主面板 · n=1 |
+| 产出 | **8 个文件**（7 个 TS：接口 / 状态机 / 参与者 / 协调者 / 本地消息表 / 内存实现 / 压测脚本，+ 1 份设计说明） | ✅ 已入库 `tcc-inventory/` |
+| 自动断言 | **39 项通过 / 0 失败** | ✅ 可复现：`node tcc-inventory/simulate.ts` |
+| 累计 token | 624K | 宿主面板 · n=1 |
+| 缓存命中率 | **99%** | 宿主面板 · n=1 |
+| 墙钟耗时 | 4 分 51 秒 | 宿主面板 · n=1 |
+| 费用 | **¥0.51** | 宿主面板 · n=1 |
+
+**结论**：`maxInlineBytes: 8000` 把 Tool Schema 完整保住了，全程没有截断崩溃；compaction 在长思考场景下没有丢推理上下文——39 项断言里包含「60 并发抢 20 件库存」「Confirm 已执行但响应丢失」「进程被杀后从快照恢复」这类**只有连贯上下文才写得对**的场景，全部通过，没有逻辑断片。
+
+> ⚠️ **口径声明（别混着引用）**：断言数、产物文件数、`simulate.ts` 可复现性属于**已核验事实**；token / 缓存命中 / 耗时 / 成本四项来自宿主前端面板，**n=1、不可复现**，它们只证明「这一次没被压缩压断」，**不构成任何收益结论、也不能当业绩**。
+> 唯一可引用的业绩口径仍是下面的 ④ 受控 A/B —— 本项目**不提供**单次会话的实测收益，理由与教训见 ③。
+> 复核方式：`cd tcc-inventory && node simulate.ts`（零依赖，Node ≥ 22.18 直接跑 `.ts`）。
+
 ## 🚨 两个反直觉的结论
 
 推导基于真实会话日志（3,233 步、平均上下文 423k、峰值 793k、实测 5.69 h）。**每一条都能用你的日志复算。**
@@ -241,6 +261,62 @@ node selftest.ts --tables                     # γ / s / ρ 三条曲线
 `apply` 支持 `--restore=<ts>` 回滚；成功后写 `.thriftflow/applied.json`，作为 `compare --after-apply` 的切分锚点。
 
 数学推导与证据等级：[`docs/model.zh.md`](docs/model.zh.md)。唯一权威是 `model.ts`。
+
+## 🛟 `apply` 排雷与安全卸载
+
+`apply` 是本项目唯一**会改写宿主配置**的命令，设计原则是：能不写就不写，写了必须能撤。
+
+### 它到底动哪三处
+
+| 位置 | 改什么 | 为什么必须在这儿 |
+|---|---|---|
+| `$DSH_HOME/.agent-presets/thriftflow/agent.cordis.yml` | 从内置 `standard` 复制，改写 `compaction-basic` 的 `thresholdRatio` / `retainTokens`、`tool-result-pruner` 的 `thresholdChars` | Web 形态下这两个插件在宿主层被 `disabled: true`，只有 preset 里的实例会生效 |
+| `$DSH_HOME/.agent-presets/thriftflow/preset.yml` | preset 元数据（名称 / 描述 / order） | 缺它 preset 列表认不出这个 id |
+| `$DSH_HOME/profiles/<profile>/cordis.patch.yml` | `# thriftflow:begin/end` 标记块内的 `spill-policy.maxInlineBytes` + `agent-presets.default: thriftflow` | `spill-policy` 是宿主层行 |
+
+副作用文件两份：备份 `.thriftflow/backups/<ts>/`（含 `manifest.json`）、生效记录 `.thriftflow/applied.json`。
+
+### 四条排雷
+
+1. **写入顺序是安全边界，不是代码风格。** web profile 是 `patchReload: live`：宿主 patch 一落盘就热重载并解析 `default: thriftflow`。若 preset 目录此刻还不存在 → `presets: preset "thriftflow" not found` → **dsh 当场起不来**（本项目真踩过，见 ③）。现在的顺序固定为 preset 组合 → preset 元数据 → 宿主 patch，并且在写宿主 patch 前**再断言一次** preset 已落盘。
+2. **匹配不到 / 匹配到多处 → 整体中止，一个字节都不写**（fail-closed）。改的是别人内置 preset 的副本，正则命中 0 处或 2 处都说明形态变了；猜着改就是制造事故。
+3. **写前 `preflight`，写后 `verify`。** preflight 只抓三类「loader 连开头都读不下去」的形态：顶层不是列表、缩进里混进制表符、`begin/end` 标记不配对；verify 回读磁盘，确认 `maxInlineBytes` / `retainTokens` / `thresholdChars` 真的在位，否则退出码 1 并给出回滚命令。
+4. **没有日志也没有显式数值 → 拒绝执行。** 取值若退化成"文档默认值"，必须显式加 `--allow-defaults`，避免把默认值当处方写进生产环境。
+
+### 出事了怎么救：`--uninstall`（不用备份，纯终端）
+
+```bash
+node thriftflow.ts apply --uninstall     # 目标态：配置里根本不存在 thriftflow
+```
+
+它只做三件事，**不需要 dsh 起来，不依赖任何 UI**：
+
+1. 从宿主 patch 剥掉 `# thriftflow:begin ... end` 整块；**剥完若只剩注释，自动补一个 `[]`** —— 空文件会被 loader 读成 `null`，同样起不来；
+2. 删掉 `$DSH_HOME/.agent-presets/thriftflow/`（并递归清理空掉的父目录，空壳会占住 id 让下次 apply 报"已存在"）；
+3. 删掉 `.thriftflow/applied.json`，让 `compare --after-apply` **失去锚点而不是拿着脏锚点报数**。
+
+**为什么卸载不走 `--restore`：** 备份存的是"上一次 apply 之前"的现场，而那份现场本身可能已经带着更早一轮的 thriftflow 块——回滚到它只是换了个旧状态，不是安全状态。两者职责不同：
+
+```bash
+node thriftflow.ts apply --uninstall                          # 目标：回到"没有 thriftflow"的干净态（故障时用这个）
+node thriftflow.ts apply --restore=2026-10-26T22-11-14-443Z    # 目标：只撤销某一次 apply（备份目录名即 ts）
+```
+
+> `--uninstall` 故意**不删备份**：留着用于事后取证，需要时手工清 `.thriftflow/backups/`。
+
+### 万一 dsh 已经起不来（手工三步核对）
+
+```text
+1) $DSH_HOME/profiles/web/cordis.patch.yml      → 没有 # thriftflow:begin 标记块（有就整块删掉）
+2) $DSH_HOME/.agent-presets/thriftflow/         → 目录已不存在
+3) $DSH_HOME/.thriftflow/applied.json           → 记录已删除
+```
+
+三条都干净，`patchReload: live` 会把 dsh 热重载回"完全没有 thriftflow"的状态。
+
+### 升级 dsh 之后
+
+preset 是从内置 `standard` **复制**出来的，宿主升级后旧副本会落后。**直接重跑 `apply` 即可幂等刷新**（没有 `--refresh` 参数，重跑本身就是刷新：标记块内的内容会被整块替换）。
 
 ## ⚠️ 踩坑笔记
 
