@@ -201,7 +201,7 @@ d/dθ [g·(α_M(θ+ρ+s)+α_O·s)/(θ-ρ)]     = -g·[α_M(2ρ+s) + α_O·s]/(θ
 | `α_O` | 4.032 ms | measured | 同上 |
 | `ō` | 824 token/步 | measured | 25 会话均值 |
 | `s` | 2,998 token | measured | `compaction/summary` 文本长度（chars/4 估算） |
-| `g` | 会话内估计 | measured | 无压缩步骤的 fresh token |
+| `g` | 会话内估计 | measured | 相邻调用 `Δprompt` 的**均值**，剔除压缩重置对（`Δprompt < −0.2·L_prev` 或后一调用挂压缩事件）。**不要**用 `median(freshTokens)`：fresh 是缓存未命中的 prefill 体积，受驱逐影响，且中位数会把工具输出那几步的增长抹掉——校准会话上它给出 235，真实值是 1,273 |
 | `κ` 中的 `α_M·θ` | — | **needs-calibration** | `compaction/summary` 事件不带 usage，摘要器自己的 cache 命中率未知 |
 | `π_cache/π_in/π_out` | ≈1:10、out≈4×in | **assumed** | 价目表未在此仓库固化 |
 
@@ -337,7 +337,10 @@ node prescribe.ts --limit=1        # 对最大的真实会话开处方
 
 1. **政策级预测 MAPE 13.7%**（未达 10%）：`steady`/`transient` 判据用 `steps×g ≤ θ-ρ`，
    但部分会话起始上下文已经很大、或压缩成簇发生，导致判据与实际锯齿不一致。
-   改进方向：用观测到的 `L̄` 与压缩次数反解 `g`，或让 `sessionCost` 接受初始上下文。
+   改进方向：让 `sessionCost` 接受初始上下文（现在写死 `DEFAULT_INITIAL_CONTEXT = 10,000`）。
+   > `g` 的口径问题已单独修复：原来用 `median(freshTokens)`，校准会话上给 235、真实值 1,273，
+   > 导致 `θ*` 被低估到 64,993。现在改为相邻调用 `Δprompt` 的均值（剔除压缩重置对），
+   > `θ*` 重算为 **111,445**、压缩周期 64 步。`α_*` 尚未按新 `g` 重新拟合。
 2. **`s` 与 `α_M·θ` 未独立标定**：`compaction/summary` 不带 usage；压缩项预测 +17.5%
    主要来自这里（CJK 用 chars/4 会低估，摘要器的系统前缀可能部分命中缓存）。
 3. **常数只对 `deepseek-flash` 家族成立**：唯一 `deepseek-v4-pro` 会话残差 −53.1%，

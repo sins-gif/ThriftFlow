@@ -513,7 +513,8 @@ export function runCompare(argv: string[]): void {
   }
   console.log(
     `\n可信区间  同一模型对实测的系统性偏差 ${(projectionBias * 100).toFixed(1)}%，` +
-      `样本外残差 7.6%（selftest）；${rows.length - steady} 个会话为瞬态（未压缩，节省≈0）`,
+      `样本外残差请跑 selftest（旧版此处写死了 7.6%，已随标定变化失效）；` +
+      `${rows.length - steady} 个会话为瞬态（未压缩，节省≈0）`,
   );
   console.log('注意      这是策略差，不是重新跑一遍模型；要验证真实效果，请 apply 后跑同样的会话再 compare。\n');
 }

@@ -43,6 +43,11 @@ function median(values: readonly number[]): number {
   return s[Math.floor(s.length / 2)];
 }
 
+function mean(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((s, v) => s + v, 0) / values.length;
+}
+
 export interface Stats {
   readonly steps: number;
   readonly windowTokens: number;
@@ -63,16 +68,40 @@ export function deriveStats(log: ReturnType<typeof readLogFile>): Stats {
   const calls: readonly CallRecord[] = log.calls;
   const steps = calls.length;
   const first = calls[0];
-  const freshClean = calls
-    .filter((c) => c.compactions.length === 0 && c.freshTokens > 0)
-    .map((c) => c.freshTokens);
   const durations = log.toolResults
     .map((t) => t.durationMs)
     .filter((d): d is number => d !== null && d > 0);
+
+  // ── 每步上下文增长 g ────────────────────────────────────────────────────
+  // 定义：上下文每步净增量 = L[i] - L[i-1]，取**均值**。
+  //
+  // 曾经用 `median(freshTokens)`，那是错的，而且是 4 倍量级的错：
+  //   · fresh 是**缓存未命中的 prefill 体积**，不是上下文增量。缓存驱逐会让它
+  //     凭空变大（老内容重新计价），而新写入的内容又可能只占其中一部分。
+  //   · median 对长尾完全不敏感：工具输出的那几步才是增长主力，中位数直接把它们
+  //     抹掉。校准会话 median(fresh)=235，而真实每步增长 1,273（差 5.4 倍）。
+  //
+  // 只剔除"重置对"：后一个调用挂了压缩事件，或增量是一个数量级以上的暴跌
+  // （手动 /compact、会话分叉等没写压缩事件的情况）。
+  // **不能只留正增量**——那样会把零增长/抖动步从分母里删掉，均值系统性偏高：
+  // 校准会话上"只留正增量"得 1,273，而真实每步增长约 1,035，差 23%。
+  const growthSamples: number[] = [];
+  for (let i = 1; i < calls.length; i++) {
+    if (calls[i].compactions.length > 0) continue;
+    const prev = calls[i - 1].promptTokens;
+    const delta = calls[i].promptTokens - prev;
+    if (delta < 0 && prev > 0 && Math.abs(delta) > prev * 0.2) continue; // 重置，不是增长
+    growthSamples.push(delta);
+  }
+  // 兜底：整场会话没有可用的相邻对（单步会话）时，退化为"输出 + 未命中"的粗估
+  const fallbackGrowth =
+    Math.round(mean(calls.map((c) => c.completionTokens)) + mean(calls.map((c) => c.freshTokens))) || 800;
+  const growth = Math.max(1, growthSamples.length > 0 ? Math.round(mean(growthSamples)) : fallbackGrowth);
+
   return {
     steps,
     windowTokens: log.contextWindow || 1_000_000,
-    growth: Math.max(1, Math.round(median(freshClean)) || 800),
+    growth,
     meanOutput: Math.round(calls.reduce((s, c) => s + c.completionTokens, 0) / Math.max(1, steps)),
     summaryTokens:
       log.compactions.length > 0
