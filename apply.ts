@@ -452,6 +452,42 @@ export function readAppliedRecord(home: string): AppliedRecord | null {
   }
 }
 
+/**
+ * 校验 `applied.json` 里记下来的取值，**此刻**是否还真的落在配置文件里。
+ *
+ * 为什么必须有这一步：这份记录只证明"某个时刻写过这些值"，不证明它们还在。
+ * 实际踩过——apply 成功、applied.json 留下记录，几天后 `cordis.patch.yml`
+ * 被改回 `[]`、`.agent-presets/thriftflow/` 整个消失。此时 `compare --after-apply`
+ * 会把一组**没吃到处理**的会话当成 after 组，算出漂亮的"实测收益"。
+ * 实验设计已经破了，再精确的模型也救不回来。
+ */
+export function verifyApplied(home: string, record: AppliedRecord): string[] {
+  const problems: string[] = [];
+
+  const hostFile = path.join(home, 'profiles', record.profile, 'cordis.patch.yml');
+  const hostText = readText(hostFile);
+  if (hostText === null) {
+    problems.push(`${hostFile}: 文件不存在`);
+  } else {
+    if (!hostText.includes(MARK_BEGIN)) problems.push(`${hostFile}: 缺少 # thriftflow:begin 标记块`);
+    if (!hostText.includes(`maxInlineBytes: ${record.values.maxInlineBytes}`)) {
+      problems.push(`${hostFile}: maxInlineBytes: ${record.values.maxInlineBytes} 不在位`);
+    }
+  }
+
+  const presetFile = path.join(home, '.agent-presets', record.presetId, 'agent.cordis.yml');
+  const presetText = readText(presetFile);
+  if (presetText === null || presetText.trim() === '') {
+    problems.push(`${presetFile}: 文件不存在或为空`);
+  } else {
+    if (!presetText.includes(`retainTokens: ${record.values.rho}`)) {
+      problems.push(`${presetFile}: retainTokens: ${record.values.rho} 不在位`);
+    }
+  }
+
+  return problems;
+}
+
 export function runApply(argv: string[]): void {
   const home = flagValue(argv, 'dsh-home') ?? dshHomeDefault();
   const restoreStamp = flagValue(argv, 'restore');

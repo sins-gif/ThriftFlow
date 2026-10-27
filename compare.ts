@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { sessionCost, type Policy } from './model.ts';
 import { discoverSessions, readLogFile, type SessionFile } from './replay.ts';
 import { deriveStats, prescribe, type Stats } from './prescribe.ts';
-import { appliedRecordPath, readAppliedRecord } from './apply.ts';
+import { appliedRecordPath, readAppliedRecord, verifyApplied } from './apply.ts';
 
 const DEFAULT_LIMIT = 25;
 
@@ -263,6 +263,21 @@ function runAfterApply(argv: string[]): void {
   }
 
   const root = path.join(home, 'sessions');
+
+  // 先验实验设计，再看数据。applied.json 只证明"曾经写过"，不证明"现在还在"。
+  const configProblems = verifyApplied(home, record);
+  if (configProblems.length > 0) {
+    console.error('\n配置不在位：after 组没有吃到处理，拒绝报数。\n');
+    for (const problem of configProblems) console.error(`  ✗ ${problem}`);
+    console.error(
+      '\n  applied.json 里记录的取值已经不在配置文件里了。此时切出来的 after 组跑的是旧配置，' +
+        'before/after 的差值只是任务构成差异，不能当收益。\n' +
+        '  先重跑 `node thriftflow.ts apply`，确认落盘并热加载，再攒 after 组。\n',
+    );
+    process.exit(2);
+    return;
+  }
+
   const all = discoverSessions(root, 'mtime');
   const beforePicked = all
     .filter((f) => f.mtimeMs < record.appliedAtMs)
